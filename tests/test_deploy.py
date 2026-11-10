@@ -164,12 +164,68 @@ class DeploymentConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'flujo-app.conf'
             with patch.object(deploy, 'SUPERVISOR_FILE', config), patch.object(deploy, 'supervisor_process_pid', return_value=123):
-                with self.assertRaisesRegex(ValueError, 'otra configuración'):
+                with self.assertRaisesRegex(ValueError, 'no se encontró'):
                     deploy.check_program_identity()
             config.write_text('[program:flujo-app]\ndirectory=/otra/app\ncommand=/otra/app/bin/python\n')
             with patch.object(deploy, 'SUPERVISOR_FILE', config):
                 with self.assertRaisesRegex(ValueError, 'otra configuración o ruta'):
                     deploy.check_program_identity()
+
+    def test_update_recognizes_supervisor_config_with_another_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();config=root/'flujotasks.conf';default=root/'flujo-app.conf'
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            config.write_text(f'[program:flujo-app]\nuser={user}\ndirectory={deploy.APP_DIR}\n'
+                f'command={deploy.APP_DIR}/.venv/bin/gunicorn --config {deploy.APP_DIR}/deploy/gunicorn.conf.py app:app\n'
+                f'environment=APP_CONFIG="{deploy.APP_DIR}/config.ini",FLUJO_CONFIG_ONLY="1"\n')
+            with patch.object(deploy,'SUPERVISOR_FILE',default),patch.object(deploy,'supervisor_process_pid',return_value=123):
+                self.assertEqual(deploy.check_program_identity(),123)
+                self.assertEqual(deploy.installed_supervisor_settings(),user)
+                default.write_text(config.read_text())
+                with self.assertRaisesRegex(ValueError,'varias configuraciones'):
+                    deploy.check_program_identity()
+
+    def test_missing_socket_config_can_be_rebuilt_without_changing_existing_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);config=root/'tmpfiles.conf';directory=root/'socket';directory.mkdir(mode=0o750)
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            before=directory.stat().st_mode
+            with patch.object(deploy,'TMPFILES_FILE',config),patch.object(deploy,'as_user'), \
+                 patch.object(deploy.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())):
+                self.assertEqual(deploy.installed_socket_group(user,directory/'app.sock',group),group)
+                deploy.ensure_socket_directory(user,group,directory/'app.sock',install=True)
+                self.assertEqual(deploy.installed_socket_group(user,directory/'app.sock'),group)
+            self.assertEqual(directory.stat().st_mode,before)
+            self.assertIn(f'# flujo-app user={user} group={group}',config.read_text())
+            self.assertNotIn('d '+str(directory),config.read_text())
+
+    def test_missing_socket_config_does_not_guess_different_nginx_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);directory=root/'socket';directory.mkdir()
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            other='different-group' if group!='different-group' else 'other-group'
+            with patch.object(deploy,'TMPFILES_FILE',root/'tmpfiles.conf'):
+                with self.assertRaisesRegex(ValueError,'grupo'):
+                    deploy.installed_socket_group(user,directory/'app.sock',other)
+
+    def test_update_recovers_missing_socket_runtime_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); directory=root/'socket';directory.mkdir(mode=0o750)
+            (root/'config.ini').write_text(f'[app]\ndatabase=tasks.db\ntimezone=UTC\nsocket={directory}/app.sock\n')
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            with patch.object(deploy,'APP_DIR',root),patch.object(deploy,'TMPFILES_FILE',root/'tmpfiles.conf'), \
+                 patch.object(deploy.os,'geteuid',return_value=0),patch.object(deploy.shutil,'which',return_value='/bin/fake'), \
+                 patch.object(deploy,'check_program_identity',return_value=123), \
+                 patch.object(deploy,'installed_supervisor_settings',return_value=user), \
+                 patch.object(deploy,'check_socket'),patch.object(deploy,'plan_nginx_socket_update',return_value=None), \
+                 patch.object(deploy,'plan_nginx_static_update',return_value=None), \
+                 patch.object(deploy,'prepare_venv'),patch.object(deploy,'ensure_socket_directory') as ensure, \
+                 patch.object(deploy,'run'):
+                self.assertEqual(deploy.main(['update','--nginx-group',group]),0)
+                ensure.assert_called_once_with(user,group,directory/'app.sock',install=True)
 
     def test_nginx_conflicting_server_name_is_rejected_even_on_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -190,8 +246,9 @@ class DeploymentConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve()
             (root/'config.ini').write_text('[app]\ndatabase=tasks.db\nport=8100\ntimezone=UTC\n')
+            runtime=root/'runtime.conf';runtime.write_text('existing')
             user=deploy.pwd.getpwuid(os.getuid()).pw_name
-            with patch.object(deploy, 'APP_DIR', root), patch.object(deploy.os, 'geteuid', return_value=0), \
+            with patch.object(deploy, 'APP_DIR', root), patch.object(deploy,'TMPFILES_FILE',runtime), patch.object(deploy.os, 'geteuid', return_value=0), \
                  patch.object(deploy.shutil, 'which', return_value='/usr/bin/fake'), \
                  patch.object(deploy, 'check_program_identity', return_value=123), \
                  patch.object(deploy, 'installed_supervisor_settings', return_value=user), \

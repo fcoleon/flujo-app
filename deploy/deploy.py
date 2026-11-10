@@ -110,13 +110,29 @@ def supervisor_process_pid():
     fail('No se pudo consultar Supervisor. Comprueba que el servicio esté activo: ' + output)
 
 
+def supervisor_config_path():
+    candidates=[]
+    for path in SUPERVISOR_FILE.parent.glob('*.conf'):
+        if path.is_symlink() or not path.is_file(): continue
+        config=configparser.RawConfigParser(interpolation=None)
+        try:
+            with path.open(encoding='utf-8') as stream: config.read_file(stream)
+        except (configparser.Error,UnicodeError): continue
+        if config.has_section('program:'+PROGRAM): candidates.append(path)
+    if len(candidates)>1:
+        fail('Hay varias configuraciones de Supervisor para flujo-app: '+', '.join(map(str,sorted(candidates))))
+    if candidates: return candidates[0]
+    return SUPERVISOR_FILE
+
+
 def check_program_identity():
-    if SUPERVISOR_FILE.is_symlink() or (SUPERVISOR_FILE.exists() and not SUPERVISOR_FILE.is_file()):
-        fail(f'La configuración de Supervisor no es un archivo regular: {SUPERVISOR_FILE}')
-    if SUPERVISOR_FILE.exists():
+    config_path=supervisor_config_path()
+    if config_path.is_symlink() or (config_path.exists() and not config_path.is_file()):
+        fail(f'La configuración de Supervisor no es un archivo regular: {config_path}')
+    if config_path.exists():
         config = configparser.RawConfigParser(interpolation=None)
         try:
-            with SUPERVISOR_FILE.open(encoding='utf-8') as stream:
+            with config_path.open(encoding='utf-8') as stream:
                 config.read_file(stream)
             section = config['program:' + PROGRAM]
             expected = {f'{APP_DIR}/.venv/bin/python -u {APP_DIR}/app.py',
@@ -124,10 +140,12 @@ def check_program_identity():
             if section.get('directory') != str(APP_DIR) or section.get('command') not in expected:
                 raise ValueError()
         except (configparser.Error, KeyError, ValueError):
-            fail(f'{SUPERVISOR_FILE} pertenece a otra configuración o ruta. Revísala antes de continuar.')
+            fail(f'{config_path} pertenece a otra configuración o ruta. Revísala antes de continuar.')
     pid = supervisor_process_pid()
-    if pid is not None and not SUPERVISOR_FILE.exists():
-        fail(f'Supervisor ya tiene un programa llamado {PROGRAM} registrado desde otra configuración.')
+    if pid is not None and not config_path.exists():
+        fail(f'Supervisor tiene registrado {PROGRAM}, pero no se encontró {SUPERVISOR_FILE}. '
+             'La configuración puede tener otro nombre o haberse movido. '
+             f'Busca el archivo con: sudo grep -rlF "[program:{PROGRAM}]" /etc/supervisor/')
     return pid
 
 
@@ -227,8 +245,27 @@ def ensure_socket_directory(user, group, socket_path, install):
         raise
 
 
-def installed_socket_group(user):
-    return read_socket_runtime(user)[0]
+def installed_socket_group(user, socket_path=None, requested_group=None):
+    if TMPFILES_FILE.is_symlink() or (TMPFILES_FILE.exists() and not TMPFILES_FILE.is_file()):
+        fail(f'La configuración tmpfiles no es un archivo regular: {TMPFILES_FILE}')
+    if TMPFILES_FILE.exists():
+        group=read_socket_runtime(user)[0]
+        if requested_group and requested_group!=group:
+            fail(f'El grupo configurado para el socket es {group}; revisa {TMPFILES_FILE}.')
+        return group
+    if socket_path is None: fail('Falta la configuración del socket; indica la ruta para reconstruirla.')
+    parent=socket_path.parent
+    group=requested_group or 'www-data'
+    if parent.is_dir():
+        info=parent.stat()
+        if info.st_uid!=pwd.getpwnam(user).pw_uid:
+            fail(f'El directorio del socket {parent} no pertenece a {user}; revisa sus permisos.')
+        actual=grp.getgrgid(info.st_gid).gr_name
+        if actual!=group:
+            fail(f'El directorio del socket usa el grupo {actual}, pero Nginx se espera en {group}. '
+                 'Si Nginx usa ese grupo, ejecuta update --nginx-group '+actual+'.')
+    print(f'No se encontró {TMPFILES_FILE}; se preparará la configuración del socket con el grupo {group}.',flush=True)
+    return group
 
 
 def prepare_venv(user, db_path, timezone, create=True):
@@ -267,10 +304,11 @@ def prepare_venv(user, db_path, timezone, create=True):
 
 
 def installed_supervisor_settings():
-    if not SUPERVISOR_FILE.is_file() or SUPERVISOR_FILE.is_symlink():
+    config_path=supervisor_config_path()
+    if not config_path.is_file() or config_path.is_symlink():
         fail('No se encontró la configuración de Supervisor de Flujo. Ejecuta primero install.')
     config = configparser.RawConfigParser(interpolation=None)
-    with SUPERVISOR_FILE.open(encoding='utf-8') as stream:
+    with config_path.open(encoding='utf-8') as stream:
         config.read_file(stream)
     section = config['program:' + PROGRAM]
     env = section.get('environment', '')
@@ -438,7 +476,8 @@ def main(argv=None):
     install.add_argument('--nginx-group', default='www-data', help='Grupo del proceso Nginx (predeterminado: www-data)')
     install.add_argument('--dry-run', action='store_true', help='Solo genera los archivos para revisión')
     install.add_argument('--output-dir', default=str(DEPLOY_DIR / 'generated'), help='Carpeta de archivos generados')
-    modes.add_parser('update', help='Actualiza la instalación existente')
+    update=modes.add_parser('update', help='Actualiza la instalación existente')
+    update.add_argument('--nginx-group', help='Grupo de Nginx si falta la configuración del socket (predeterminado: www-data)')
     args = parser.parse_args(argv)
     if args.mode == 'install' and not args.skip_nginx and not args.server_name:
         parser.error('install requiere --server-name, excepto con --skip-nginx')
@@ -473,6 +512,8 @@ def main(argv=None):
     for binary in ('runuser', 'supervisorctl', 'systemd-tmpfiles'):
         if not shutil.which(binary): fail(f'Falta {binary}; revisa deploy/README.md.')
     own_pid = check_program_identity()
+    if args.mode=='install' and supervisor_config_path()!=SUPERVISOR_FILE:
+        fail('Ya existe una configuración de Supervisor con otro nombre; usa update para conservarla.')
     if args.mode == 'update':
         user = installed_supervisor_settings()
         if not SAFE_USER.fullmatch(user) or user == 'root': fail('Usuario de Supervisor inválido.')
@@ -480,7 +521,9 @@ def main(argv=None):
         except KeyError: fail(f'No existe el usuario Linux {user}.')
     else:
         user = args.user
-    group = installed_socket_group(user) if args.mode == 'update' else args.nginx_group
+    if args.nginx_group and not SAFE_USER.fullmatch(args.nginx_group): fail('Grupo de Nginx inválido.')
+    missing_socket_config = not TMPFILES_FILE.exists()
+    group = installed_socket_group(user,socket_path,args.nginx_group) if args.mode == 'update' else args.nginx_group
     try: grp.getgrnam(group)
     except KeyError: fail(f'No existe el grupo de Nginx {group}.')
     check_socket(socket_path,user,own_pid)
@@ -488,7 +531,11 @@ def main(argv=None):
     if args.mode == 'update': nginx_update = plan_nginx_static_update(nginx_update)
     if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path)
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
-    ensure_socket_directory(user,group,socket_path,install=args.mode == 'install')
+    ensure_socket_directory(user,group,socket_path,install=args.mode == 'install' or missing_socket_config)
+    if args.mode=='update' and missing_socket_config and socket_path.parent.is_dir() and str(socket_path.parent).startswith('/run/'):
+        _,managed=read_socket_runtime(user)
+        if managed is None:
+            print(f'Aviso: asegura que {socket_path.parent} se recree al reiniciar el servidor.',flush=True)
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:

@@ -75,6 +75,8 @@ sudo python3 deploy/deploy.py update
 
 Actualiza las dependencias y reinicia Flujo. Las URLs de los estáticos incluyen un identificador basado en su contenido y el navegador revalida sus copias en caché. El script migra los bloques anteriores de estáticos que reconoce y conserva las rutas de `/static/` configuradas manualmente. Si cambias el socket, actualiza el `proxy_pass`. Conserva el resto de la configuración y los certificados; si el sitio tiene una configuración personalizada que no puede actualizar, pedirá ajustarla manualmente. El cambio de socket puede provocar una interrupción breve.
 
+Si falta la configuración temporal del socket, `update` intenta reconstruirla. Usa el grupo `www-data` por defecto; si Nginx usa otro, indica `sudo python3 deploy/deploy.py update --nginx-group GRUPO`. Si el directorio ya existía en `/run`, asegúrate de que se recree al reiniciar: el script no toma control de directorios existentes que podrían ser compartidos.
+
 ## Migrar una instalación anterior por TCP
 
 Respalda la base de datos y la configuración de Nginx antes de actualizar el código. En el sitio existente `/etc/nginx/sites-available/flujo-app`, cambia cada `proxy_pass http://127.0.0.1:PUERTO;` por el destino Unix mostrado arriba. Verifica la sintaxis con `sudo nginx -t`, pero **aún no recargues Nginx**. Conserva los bloques y certificados HTTPS existentes.
