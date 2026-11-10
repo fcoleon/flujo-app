@@ -1,6 +1,6 @@
 # Despliegue en Ubuntu EC2
 
-Flujo usa Flask en desarrollo y Gunicorn detrás de Nginx en producción. Supervisor mantiene Gunicorn en ejecución; la comunicación con Nginx usa un socket Unix, sin reservar un puerto TCP para la aplicación. Nginx entrega directamente CSS, JavaScript y favicon desde `/var/lib/flujo-app/assets`, sin acceder al directorio del proyecto; Flask entrega el HTML y la API.
+Flujo usa Flask en desarrollo y Gunicorn detrás de Nginx en producción. Supervisor mantiene Gunicorn en ejecución; la comunicación con Nginx usa un socket Unix, sin reservar un puerto TCP para la aplicación. Nginx entrega CSS, JavaScript y favicon directamente desde la carpeta `static/` del proyecto; Flask entrega el HTML y la API.
 
 La aplicación debe estar en su ruta definitiva. Se requiere Python 3.9 o superior, `python3-venv`, `tzdata`, Nginx, Supervisor, `systemd-tmpfiles` e `iproute2`. Nginx y Supervisor deben estar en ejecución. El usuario de la aplicación necesita acceso de lectura al proyecto y de escritura a la base de datos y su directorio.
 
@@ -43,15 +43,13 @@ proxy_pass http://unix:/run/flujo/flujo.sock;
 Para que ese Nginx sirva también los estáticos, agrega dentro del bloque `server` que atiende la aplicación el `location` de assets que aparece en `deploy/nginx.conf.template`:
 
 ```nginx
-location ~ "^/assets/(style\.[0-9a-f]{16}\.css|app\.[0-9a-f]{16}\.js|favicon\.[0-9a-f]{16}\.svg)$" {
-    root /var/lib/flujo-app;
-    try_files $uri =404;
-    add_header Cache-Control "public, max-age=31536000, immutable";
-    access_log off;
+location ^~ /static/ {
+    alias /home/ubuntu/flujo-app/static/;
+    add_header Cache-Control "no-cache";
 }
 ```
 
-Después ejecuta `sudo nginx -t && sudo systemctl reload nginx`. Mientras no se incluya, Flask seguirá entregando los archivos como alternativa.
+Reemplaza la ruta del ejemplo por la ubicación real. El usuario de Nginx debe poder atravesar todos los directorios superiores y leer los archivos de `static/`. Después ejecuta `sudo nginx -t && sudo systemctl reload nginx`. Mientras no se incluya, Flask seguirá entregando los archivos como alternativa.
 
 La configuración inicial de Nginx usa HTTP. Restringe el acceso en el security group, crea la primera cuenta administradora y configura HTTPS antes de usar contraseñas desde la red. Con Certbot instalado:
 
@@ -75,7 +73,7 @@ Después de copiar el código nuevo, conservando `config.ini`, `.venv` y la base
 sudo python3 deploy/deploy.py update
 ```
 
-Actualiza las dependencias, publica los archivos estáticos y reinicia Flujo. Los archivos llevan un identificador basado en su contenido y las versiones anteriores se conservan para las páginas que aún las usan. En la primera actualización de una instalación anterior, el script agrega la configuración de estáticos directamente al sitio de Flujo y recarga Nginx; también reemplaza el `include` anterior si su contenido no fue personalizado. Si cambias el socket, actualiza el `proxy_pass`. Conserva el resto de la configuración y los certificados; si el sitio tiene una configuración personalizada que no puede actualizar, pedirá ajustarla manualmente. El cambio de socket puede provocar una interrupción breve.
+Actualiza las dependencias y reinicia Flujo. Las URLs de los estáticos incluyen un identificador basado en su contenido y el navegador revalida sus copias en caché. El script migra los bloques anteriores de estáticos que reconoce y conserva las rutas de `/static/` configuradas manualmente. Si cambias el socket, actualiza el `proxy_pass`. Conserva el resto de la configuración y los certificados; si el sitio tiene una configuración personalizada que no puede actualizar, pedirá ajustarla manualmente. El cambio de socket puede provocar una interrupción breve.
 
 ## Migrar una instalación anterior por TCP
 

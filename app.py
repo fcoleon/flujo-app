@@ -17,7 +17,6 @@ PORT = SETTINGS['port']
 STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
 TEMPLATE_DIR = Path(__file__).resolve().parent / 'templates'
-PUBLIC_ASSET_DIR = Path('/var/lib/flujo-app/assets')
 
 def running_version():
     try:
@@ -240,11 +239,8 @@ def index(public_id=None):
 def content_version(filename):
     return hashlib.sha256((STATIC_DIR/filename).read_bytes()).hexdigest()[:16]
 
-PRODUCTION_ASSET_VERSIONS = ({name:content_version(name) for name in ('style.css','app.js','favicon.svg')}
-                             if os.environ.get('FLUJO_BEHIND_PROXY')=='1' else None)
-
 def asset_version(filename):
-    return PRODUCTION_ASSET_VERSIONS[filename] if PRODUCTION_ASSET_VERSIONS is not None else content_version(filename)
+    return content_version(filename)
 
 @app.get('/assets/<filename>')
 def versioned_asset(filename):
@@ -253,17 +249,11 @@ def versioned_asset(filename):
     name,version,extension=match.groups()
     source=f'{name}.{extension}'
     if source not in ('style.css','app.js','favicon.svg'): abort(404)
-    if PRODUCTION_ASSET_VERSIONS is not None:
-        response=send_from_directory(PUBLIC_ASSET_DIR,filename)
-    else:
-        if version!=asset_version(source): abort(404)
-        response=send_from_directory(STATIC_DIR,source)
-    response.cache_control.clear()
-    response.cache_control.public=True
-    response.cache_control.max_age=31536000
-    response.cache_control.immutable=True
+    response=send_from_directory(STATIC_DIR,source)
+    response.cache_control.no_cache=True
     return response
 
+@app.get('/static/<any(app.js,style.css,favicon.svg):filename>')
 @app.get('/<any(app.js,style.css,favicon.svg):filename>')
 def static_asset(filename):
     response=send_from_directory(STATIC_DIR,filename)

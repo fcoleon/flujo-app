@@ -3,7 +3,6 @@
 import argparse
 import configparser
 import errno
-import hashlib
 import grp
 import ipaddress
 import os
@@ -28,7 +27,24 @@ NGINX_FILE = Path('/etc/nginx/sites-available/flujo-app')
 NGINX_LINK = Path('/etc/nginx/sites-enabled/flujo-app')
 TMPFILES_FILE = Path('/etc/tmpfiles.d/flujo-app.conf')
 LEGACY_NGINX_STATIC_FILE = Path('/etc/nginx/snippets/flujo-app-static.conf')
-PUBLIC_DIR = Path('/var/lib/flujo-app/assets')
+PREVIOUS_STATIC_BLOCK = r'''# BEGIN flujo-app assets
+location ~ "^/assets/(style\.[0-9a-f]{16}\.css|app\.[0-9a-f]{16}\.js|favicon\.[0-9a-f]{16}\.svg)$" {
+    root /var/lib/flujo-app;
+    try_files $uri =404;
+    add_header Cache-Control "public, max-age=31536000, immutable";
+    access_log off;
+}
+# END flujo-app assets'''
+PREVIOUS_STATIC_PREFIX_BLOCK = r'''# BEGIN flujo-app assets
+location ^~ /assets/ {
+    root /var/lib/flujo-app;
+    if ($uri !~ "^/assets/(style\.[0-9a-f]{16}\.css|app\.[0-9a-f]{16}\.js|favicon\.[0-9a-f]{16}\.svg)$") {
+        return 404;
+    }
+    try_files $uri =404;
+    add_header Cache-Control "public, max-age=31536000, immutable";
+}
+# END flujo-app assets'''
 SAFE_PATH = re.compile(r'^/[A-Za-z0-9_./+@-]+$')
 SAFE_USER = re.compile(r'^[a-z_][a-z0-9_-]*[$]?$')
 
@@ -318,42 +334,16 @@ def write_atomic(path, content):
         raise
 
 
-def publish_static_assets():
-    # Solo se publica el contenido público; Nginx no necesita acceso al proyecto.
-    for directory in (PUBLIC_DIR.parent, PUBLIC_DIR):
-        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-            fail(f'La ruta pública no es un directorio normal: {directory}')
-        if not directory.exists():
-            directory.mkdir(mode=0o755)
-            directory.chmod(0o755)
-        info=directory.stat()
-        if info.st_uid!=os.geteuid() or info.st_mode & 0o005 != 0o005 or info.st_mode & 0o022:
-            fail(f'Revisa el dueño y los permisos del directorio público {directory}.')
-    for name in ('style.css','app.js','favicon.svg'):
-        content=(APP_DIR/'static'/name).read_bytes()
-        version=hashlib.sha256(content).hexdigest()[:16]
-        stem,extension=name.rsplit('.',1)
-        destination=PUBLIC_DIR/f'{stem}.{version}.{extension}'
-        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
-            fail(f'El archivo público no es un archivo regular: {destination}')
-        if destination.exists():
-            if destination.stat().st_uid!=os.geteuid() or destination.read_bytes()!=content:
-                fail(f'El archivo público existente no coincide: {destination}')
-        else:
-            write_atomic(destination,content.decode('utf-8'))
-        destination.chmod(0o644)
-
-
 def nginx_static_block():
     template=(DEPLOY_DIR/'nginx.conf.template').read_text(encoding='utf-8')
     match=re.search(r'(?ms)^([ \t]*)# BEGIN flujo-app assets\n.*?^\1# END flujo-app assets$',template)
     if not match: fail('Falta el bloque de archivos estáticos en la plantilla de Nginx.')
-    return textwrap.dedent(match.group(0))
+    return textwrap.dedent(match.group(0)).replace('@@APP_DIR@@',check_path(APP_DIR,'La ruta de la aplicación'))
 
 
 def plan_nginx_static_update(change):
     if not NGINX_FILE.is_file():
-        print('Aviso: configura Nginx para servir los archivos de /assets/; consulta deploy/README.md.', flush=True)
+        print('Aviso: configura Nginx para servir los archivos de /static/; consulta deploy/README.md.', flush=True)
         return change
     original,updated=change if change else (NGINX_FILE.read_text(encoding='utf-8'),NGINX_FILE.read_text(encoding='utf-8'))
     pattern=re.compile(r'(?m)^(?P<indent>[ \t]*)location[ \t]+/[ \t]*\{(?P<body>[^{}]*)\}')
@@ -366,13 +356,23 @@ def plan_nginx_static_update(change):
         fail('No se pudo actualizar automáticamente Nginx para archivos estáticos; consulta deploy/README.md.')
     if legacy_count:
         if LEGACY_NGINX_STATIC_FILE.exists():
-            expected='\n'.join(block.splitlines()[1:-1]).strip()
+            expected='\n'.join(PREVIOUS_STATIC_BLOCK.splitlines()[1:-1]).strip()
             actual=LEGACY_NGINX_STATIC_FILE.read_text(encoding='utf-8').strip()
             if textwrap.dedent(expected)!=textwrap.dedent(actual):
                 fail(f'El snippet anterior {LEGACY_NGINX_STATIC_FILE} fue modificado; migra su contenido manualmente.')
         updated=legacy.sub(lambda m:textwrap.indent(block,m.group('indent')),updated)
     elif count==0:
         updated=pattern.sub(lambda m:textwrap.indent(block,m.group('indent'))+'\n'+m.group(0) if re.search(r'\bproxy_pass\s+',m.group('body')) else m.group(0),updated)
+    if count:
+        marked=re.compile(r'(?ms)^(?P<indent>[ \t]*)# BEGIN flujo-app assets\n.*?^(?P=indent)# END flujo-app assets$')
+        def upgrade(match):
+            existing=textwrap.dedent(match.group(0))
+            if existing!=block and re.search(r'(?m)^location\s+\^~\s+/static/\s*\{',existing):
+                return match.group(0)
+            if existing not in (block,PREVIOUS_STATIC_BLOCK,PREVIOUS_STATIC_PREFIX_BLOCK):
+                fail('El bloque de archivos estáticos fue modificado; actualízalo manualmente.')
+            return textwrap.indent(block,match.group('indent'))
+        updated=marked.sub(upgrade,updated)
     return (original,updated) if updated!=original else None
 
 
@@ -489,7 +489,6 @@ def main(argv=None):
     if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path)
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
     ensure_socket_directory(user,group,socket_path,install=args.mode == 'install')
-    publish_static_assets()
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:
