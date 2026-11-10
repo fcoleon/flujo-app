@@ -1,1 +1,2 @@
-d /run/flujo 0750 @@APP_USER@@ @@NGINX_GROUP@@ -
+# flujo-app user=@@APP_USER@@ group=@@NGINX_GROUP@@
+@@SOCKET_DIRECTORY_RULE@@

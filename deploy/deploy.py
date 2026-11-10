@@ -113,9 +113,10 @@ def check_program_identity():
 
 
 def validate_socket_path(value):
-    path = Path(check_path(value, 'La ruta del socket'))
-    if path.parent != SOCKET_DIR or len(os.fsencode(path)) > 100 or not re.fullmatch(r'[A-Za-z0-9_-]+\.sock', path.name):
-        fail('El socket de producción debe estar en /run/flujo y terminar en .sock.')
+    raw = check_path(value, 'La ruta del socket')
+    path = Path(raw)
+    if '..' in path.parts or path == Path('/') or len(os.fsencode(raw)) > 100:
+        fail('El socket debe tener una ruta absoluta normal de hasta 100 bytes.')
     return path
 
 
@@ -128,7 +129,7 @@ def check_socket(path, user, own_pid):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
         probe.settimeout(1)
         result = probe.connect_ex(str(path))
-    if result == errno.ECONNREFUSED: return  # Socket obsoleto del mismo usuario.
+    if result == errno.ECONNREFUSED: return
     if result == 0 and own_pid and shutil.which('ss'):
         output = subprocess.run(['ss','-xlnp'],capture_output=True,text=True,check=True).stdout
         for line in output.splitlines():
@@ -136,33 +137,69 @@ def check_socket(path, user, own_pid):
     fail(f'El socket está en uso o no se puede verificar su propietario: {path}')
 
 
-def ensure_socket_directory(user, group, install):
-    uid = pwd.getpwnam(user).pw_uid
-    gid = grp.getgrnam(group).gr_gid
-    content = render('tmpfiles.conf.template', {'APP_USER':user,'NGINX_GROUP':group})
-    if SOCKET_DIR.is_symlink() or (SOCKET_DIR.exists() and not SOCKET_DIR.is_dir()):
-        fail(f'El directorio del socket no es un directorio seguro: {SOCKET_DIR}')
-    if SOCKET_DIR.exists():
-        info=SOCKET_DIR.stat()
-        if (info.st_uid,info.st_gid)!=(uid,gid):
-            fail(f'{SOCKET_DIR} pertenece a otro usuario o grupo; revísalo antes de continuar.')
+def read_socket_runtime(user):
+    if TMPFILES_FILE.is_symlink() or not TMPFILES_FILE.is_file():
+        fail('Falta la configuración del socket; ejecuta primero install.')
+    lines = [line.strip() for line in TMPFILES_FILE.read_text(encoding='utf-8').splitlines() if line.strip()]
+    if len(lines)==1 and lines[0].startswith('d '):
+        parts=lines[0].split()
+        if len(parts)==6 and parts[0]=='d' and parts[2]=='0750' and parts[3]==user and parts[5]=='-':
+            return parts[4],Path(check_path(parts[1],'El directorio del socket'))
+    match=re.fullmatch(r'# flujo-app user=([a-z_][a-z0-9_-]*[$]?) group=([a-z_][a-z0-9_-]*[$]?)',lines[0]) if lines else None
+    if not match or match.group(1)!=user or len(lines)>2:
+        fail('La configuración tmpfiles del socket no coincide con esta instalación.')
+    managed=None
+    if len(lines)==2:
+        parts=lines[1].split()
+        if len(parts)!=6 or parts[0]!='d' or parts[2]!='0750' or parts[3]!=user or parts[4]!=match.group(2) or parts[5]!='-':
+            fail('La configuración tmpfiles del socket no coincide con esta instalación.')
+        managed=Path(check_path(parts[1],'El directorio del socket'))
+    return match.group(2),managed
+
+
+def ensure_socket_directory(user, group, socket_path, install):
+    parent=socket_path.parent;uid=pwd.getpwnam(user).pw_uid;gid=grp.getgrnam(group).gr_gid
+    previous=None
     if TMPFILES_FILE.is_symlink() or (TMPFILES_FILE.exists() and not TMPFILES_FILE.is_file()):
         fail(f'La configuración tmpfiles no es un archivo regular: {TMPFILES_FILE}')
-    if TMPFILES_FILE.exists() and TMPFILES_FILE.read_text(encoding='utf-8')!=content:
-        fail(f'{TMPFILES_FILE} ya existe con otra configuración.')
-    if not TMPFILES_FILE.exists():
-        if not install: fail('Falta la configuración del socket; ejecuta primero install.')
+    if TMPFILES_FILE.exists():
+        previous_group,previous=read_socket_runtime(user)
+        if previous_group!=group: fail(f'{TMPFILES_FILE} ya existe con otra configuración de grupo.')
+    elif not install:
+        fail('Falta la configuración del socket; ejecuta primero install.')
+    if parent.exists() and not parent.is_dir(): fail(f'La carpeta del socket no es un directorio: {parent}')
+    if not parent.exists() and not parent.parent.is_dir():
+        fail(f'El directorio superior debe existir: {parent.parent}')
+    managed = parent if not parent.exists() or previous==parent else None
+    if managed and parent.exists():
+        if parent.is_symlink(): fail(f'El directorio administrado no puede ser un enlace simbólico: {parent}')
+        info=parent.stat()
+        if (info.st_uid,info.st_gid)!=(uid,gid):
+            fail(f'{parent} pertenece a otro usuario o grupo; revísalo antes de continuar.')
+    rule=f'd {parent} 0750 {user} {group} -' if managed else ''
+    content=render('tmpfiles.conf.template',{'APP_USER':user,'NGINX_GROUP':group,'SOCKET_DIRECTORY_RULE':rule})
+    if not TMPFILES_FILE.exists() or TMPFILES_FILE.read_text(encoding='utf-8')!=content:
         write_atomic(TMPFILES_FILE,content)
-    run(['systemd-tmpfiles','--create',str(TMPFILES_FILE)])
+    if managed: run(['systemd-tmpfiles','--create',str(TMPFILES_FILE)])
+    for flag in ('-x','-w'):
+        try: as_user(user,'test',flag,parent)
+        except subprocess.CalledProcessError: fail(f'{user} necesita permisos de acceso y escritura en {parent}.')
+    try:
+        account=pwd.getpwnam(group)
+    except KeyError:
+        account=None
+    if account and account.pw_gid==gid:
+        try: as_user(group,'test','-x',parent)
+        except subprocess.CalledProcessError: fail(f'Nginx necesita permiso para atravesar {parent}.')
+    else:
+        for directory in (parent,*parent.parents):
+            info=directory.stat()
+            if not (info.st_mode & stat.S_IXOTH or (info.st_gid==gid and info.st_mode & stat.S_IXGRP)):
+                fail(f'El grupo {group} necesita permiso para atravesar {directory}.')
 
 
 def installed_socket_group(user):
-    if TMPFILES_FILE.is_symlink() or not TMPFILES_FILE.is_file():
-        fail('Falta la configuración del socket; ejecuta primero install.')
-    parts = TMPFILES_FILE.read_text(encoding='utf-8').split()
-    if len(parts)!=6 or parts[:4]!=['d',str(SOCKET_DIR),'0750',user] or parts[5]!='-':
-        fail('La configuración tmpfiles del socket no coincide con esta instalación.')
-    return parts[4]
+    return read_socket_runtime(user)[0]
 
 
 def prepare_venv(user, db_path, timezone, create=True):
