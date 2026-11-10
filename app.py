@@ -391,6 +391,12 @@ class Handler(BaseHTTPRequestHandler):
                     if not body: raise ValueError('Escribe un comentario')
                     if len(body)>10000: raise ValueError('El comentario es demasiado largo')
                     c.execute('INSERT INTO comments(task_id,user_id,body,created_at) VALUES(?,?,?,?)',(tid,u['id'],body,now()))
+                elif path=='/api/task/delete':
+                    tid=int(b['id'])
+                    if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')
+                    task=c.execute('SELECT title,parent_id FROM tasks WHERE id=?',(tid,)).fetchone()
+                    if task['parent_id']: record(c,task['parent_id'],u['id'],'eliminó la subtarea '+task['title'])
+                    c.execute('DELETE FROM tasks WHERE id=?',(tid,))
                 elif path=='/api/task/update':
                     tid=int(b['id'])
                     if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')

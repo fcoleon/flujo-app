@@ -83,6 +83,29 @@ class TaskTypesTest(unittest.TestCase):
         sts[0]['is_done']=0; sts[0]['color']='red'
         self.assertEqual(self.post('task-types/update',{'id':base,'name':'Base','statuses':sts})[0],400)
 
+    def test_delete_task_permissions_projects_and_subtasks(self):
+        task=self.post('tasks',{'title':'Principal','project_id':1,'column_id':1})[1]['id']
+        child=self.post('tasks',{'title':'Subtarea','parent_id':task})[1]['id']
+        self.post('task/project',{'id':task,'project_id':2})
+        self.post('comments',{'task_id':task,'body':'Comentario'})
+        self.assertEqual(self.post('task/delete',{'id':task},user=3)[0],403)
+        with app.db() as c:
+            self.assertIsNotNone(c.execute('SELECT id FROM tasks WHERE id=?',(task,)).fetchone())
+        self.assertEqual(self.post('task/delete',{'id':task},user=2)[0],200)
+        with app.db() as c:
+            self.assertIsNone(c.execute('SELECT id FROM tasks WHERE id=?',(task,)).fetchone())
+            self.assertIsNone(c.execute('SELECT parent_id FROM tasks WHERE id=?',(child,)).fetchone()['parent_id'])
+            for table in ('placements','comments','history'):
+                self.assertEqual(c.execute(f'SELECT count(*) FROM {table} WHERE task_id=?',(task,)).fetchone()[0],0)
+            self.assertEqual(c.execute('SELECT count(*) FROM metric_events WHERE task_id=?',(task,)).fetchone()[0],1)
+
+    def test_delete_subtask_records_parent_activity(self):
+        task=self.post('tasks',{'title':'Principal','project_id':1,'column_id':1})[1]['id']
+        child=self.post('tasks',{'title':'Subtarea','parent_id':task},user=2)[1]['id']
+        self.assertEqual(self.post('task/delete',{'id':child},user=2)[0],200)
+        with app.db() as c:
+            self.assertIsNotNone(c.execute('SELECT 1 FROM history WHERE task_id=? AND message=?',(task,'eliminó la subtarea Subtarea')).fetchone())
+
     def test_delete_type_rejects_in_use_and_preserves_metrics(self):
         typ=self.post('task-types',{'project_id':1,'name':'Personalizado'})[1]['id']
         base=None
