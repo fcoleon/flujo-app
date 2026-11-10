@@ -200,7 +200,7 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy, 'installed_socket_group', return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
                  patch.object(deploy, 'ensure_socket_directory') as socket_dir, \
                  patch.object(deploy, 'prepare_venv') as prepare, patch.object(deploy, 'publish_static_assets'), \
-                 patch.object(deploy, 'install_nginx_static_snippet'), patch.object(deploy, 'run') as run:
+                 patch.object(deploy, 'run') as run:
                 self.assertEqual(deploy.main(['update']),0)
             socket_check.assert_called_once_with(Path('/run/flujo/flujo.sock'),user,123)
             nginx_check.assert_called_once_with(Path('/run/flujo/flujo.sock'))
@@ -241,10 +241,10 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertIn('proxy_pass http://unix:/run/otra-app/custom.sock;',nginx)
             self.assertIn(f'APP_CONFIG="{root}/config.ini"',supervisor)
             self.assertIn('d /run/otra-app 0750 ',(root/'generated/tmpfiles.conf').read_text())
-            self.assertIn('include /etc/nginx/snippets/flujo-app-static.conf;',nginx)
-            static=(root/'generated/nginx-static.conf').read_text()
-            self.assertIn('root /var/lib/flujo-app;',static)
-            self.assertIn('immutable',static)
+            self.assertNotIn('flujo-app-static.conf',nginx)
+            self.assertIn('root /var/lib/flujo-app;',nginx)
+            self.assertIn('immutable',nginx)
+            self.assertFalse((root/'generated/nginx-static.conf').exists())
 
     def test_nginx_socket_update_preserves_https_and_rejects_multiple_destinations(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -323,10 +323,11 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy,'installed_socket_group',return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
                  patch.object(deploy,'check_socket'), patch.object(deploy,'ensure_socket_directory'), \
                  patch.object(deploy,'prepare_venv'), patch.object(deploy,'publish_static_assets'), \
-                 patch.object(deploy,'install_nginx_static_snippet'), patch.object(deploy,'run') as run:
+                 patch.object(deploy,'run') as run:
                 self.assertEqual(deploy.main(['update']),0)
             self.assertIn('proxy_pass http://unix:/run/custom/new.sock;',site.read_text())
-            self.assertIn('include /etc/nginx/snippets/flujo-app-static.conf;',site.read_text())
+            self.assertIn('root /var/lib/flujo-app;',site.read_text())
+            self.assertNotIn('flujo-app-static.conf',site.read_text())
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['nginx','-t'], ['supervisorctl','restart','flujo-app'],
                 ['supervisorctl','status','flujo-app'], ['systemctl','reload','nginx']])
@@ -354,9 +355,28 @@ class DeploymentConfigTest(unittest.TestCase):
                 before,after=deploy.plan_nginx_static_update(None)
                 self.assertEqual(before,original)
                 self.assertIn('ssl_certificate /etc/letsencrypt/live/test.pem;',after)
-                self.assertIn('include /etc/nginx/snippets/flujo-app-static.conf;',after)
+                self.assertIn('root /var/lib/flujo-app;',after)
+                self.assertNotIn('flujo-app-static.conf',after)
                 site.write_text(after)
                 self.assertIsNone(deploy.plan_nginx_static_update(None))
+
+    def test_migrates_existing_snippet_without_changing_custom_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); site=root/'site'; snippet=root/'old-static.conf'
+            include=f'include {snippet};'
+            original=f'server {{\n ssl_certificate /etc/letsencrypt/live/test.pem;\n {include}\n location / {{\n  proxy_pass http://unix:/run/flujo/app.sock;\n }}\n}}\n'
+            site.write_text(original)
+            snippet.write_text('\n'.join(deploy.nginx_static_block().splitlines()[1:-1])+'\n')
+            with patch.object(deploy,'NGINX_FILE',site),patch.object(deploy,'LEGACY_NGINX_STATIC_FILE',snippet):
+                before,after=deploy.plan_nginx_static_update(None)
+                self.assertEqual(before,original)
+                self.assertIn('ssl_certificate /etc/letsencrypt/live/test.pem;',after)
+                self.assertIn('root /var/lib/flujo-app;',after)
+                self.assertNotIn(include,after)
+                self.assertTrue(snippet.exists())
+                snippet.write_text('location /personalizado { return 200; }\n')
+                with self.assertRaisesRegex(ValueError,'modificado'):
+                    deploy.plan_nginx_static_update(None)
 
 
 if __name__ == '__main__':

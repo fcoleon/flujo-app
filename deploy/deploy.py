@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import stat
+import textwrap
 from pathlib import Path
 
 DEPLOY_DIR = Path(__file__).resolve().parent
@@ -26,7 +27,7 @@ SUPERVISOR_FILE = Path('/etc/supervisor/conf.d/flujo-app.conf')
 NGINX_FILE = Path('/etc/nginx/sites-available/flujo-app')
 NGINX_LINK = Path('/etc/nginx/sites-enabled/flujo-app')
 TMPFILES_FILE = Path('/etc/tmpfiles.d/flujo-app.conf')
-NGINX_STATIC_FILE = Path('/etc/nginx/snippets/flujo-app-static.conf')
+LEGACY_NGINX_STATIC_FILE = Path('/etc/nginx/snippets/flujo-app-static.conf')
 PUBLIC_DIR = Path('/var/lib/flujo-app/assets')
 SAFE_PATH = re.compile(r'^/[A-Za-z0-9_./+@-]+$')
 SAFE_USER = re.compile(r'^[a-z_][a-z0-9_-]*[$]?$')
@@ -343,17 +344,11 @@ def publish_static_assets():
         destination.chmod(0o644)
 
 
-def install_nginx_static_snippet():
-    if not NGINX_STATIC_FILE.parent.is_dir():
-        fail(f'No existe el directorio de Nginx {NGINX_STATIC_FILE.parent}.')
-    content=render('nginx-static.conf.template',{})
-    if NGINX_STATIC_FILE.is_symlink() or (NGINX_STATIC_FILE.exists() and not NGINX_STATIC_FILE.is_file()):
-        fail(f'La configuración estática de Nginx no es un archivo regular: {NGINX_STATIC_FILE}')
-    if NGINX_STATIC_FILE.exists():
-        if NGINX_STATIC_FILE.read_text(encoding='utf-8')!=content:
-            fail(f'{NGINX_STATIC_FILE} ya existe con otro contenido; revísalo antes de continuar.')
-    else:
-        write_atomic(NGINX_STATIC_FILE,content)
+def nginx_static_block():
+    template=(DEPLOY_DIR/'nginx.conf.template').read_text(encoding='utf-8')
+    match=re.search(r'(?ms)^([ \t]*)# BEGIN flujo-app assets\n.*?^\1# END flujo-app assets$',template)
+    if not match: fail('Falta el bloque de archivos estáticos en la plantilla de Nginx.')
+    return textwrap.dedent(match.group(0))
 
 
 def plan_nginx_static_update(change):
@@ -361,14 +356,23 @@ def plan_nginx_static_update(change):
         print('Aviso: configura Nginx para servir los archivos de /assets/; consulta deploy/README.md.', flush=True)
         return change
     original,updated=change if change else (NGINX_FILE.read_text(encoding='utf-8'),NGINX_FILE.read_text(encoding='utf-8'))
-    include=f'include {NGINX_STATIC_FILE};'
     pattern=re.compile(r'(?m)^(?P<indent>[ \t]*)location[ \t]+/[ \t]*\{(?P<body>[^{}]*)\}')
     matches=[m for m in pattern.finditer(updated) if re.search(r'\bproxy_pass\s+',m.group('body'))]
-    count=len(re.findall(r'(?m)^[ \t]*'+re.escape(include)+r'[ \t]*(?:#.*)?$',updated))
-    if not matches or count not in (0,len(matches)):
+    legacy=re.compile(r'(?m)^(?P<indent>[ \t]*)include[ \t]+'+re.escape(str(LEGACY_NGINX_STATIC_FILE))+r';[ \t]*(?:#.*)?$')
+    legacy_count=len(legacy.findall(updated))
+    block=nginx_static_block()
+    count=len(re.findall(r'(?m)^[ \t]*# BEGIN flujo-app assets[ \t]*$',updated))
+    if not matches or count+legacy_count not in (0,len(matches)):
         fail('No se pudo actualizar automáticamente Nginx para archivos estáticos; consulta deploy/README.md.')
-    if count==0:
-        updated=pattern.sub(lambda m: m.group('indent')+include+'\n'+m.group(0) if re.search(r'\bproxy_pass\s+',m.group('body')) else m.group(0),updated)
+    if legacy_count:
+        if LEGACY_NGINX_STATIC_FILE.exists():
+            expected='\n'.join(block.splitlines()[1:-1]).strip()
+            actual=LEGACY_NGINX_STATIC_FILE.read_text(encoding='utf-8').strip()
+            if textwrap.dedent(expected)!=textwrap.dedent(actual):
+                fail(f'El snippet anterior {LEGACY_NGINX_STATIC_FILE} fue modificado; migra su contenido manualmente.')
+        updated=legacy.sub(lambda m:textwrap.indent(block,m.group('indent')),updated)
+    elif count==0:
+        updated=pattern.sub(lambda m:textwrap.indent(block,m.group('indent'))+'\n'+m.group(0) if re.search(r'\bproxy_pass\s+',m.group('body')) else m.group(0),updated)
     return (original,updated) if updated!=original else None
 
 
@@ -462,9 +466,7 @@ def main(argv=None):
         output.mkdir(parents=True, exist_ok=True)
         write_atomic(output / 'supervisor.conf', supervisor_config)
         write_atomic(output / 'tmpfiles.conf', tmpfiles_config)
-        if not args.skip_nginx:
-            write_atomic(output / 'nginx.conf', nginx_config)
-            write_atomic(output / 'nginx-static.conf',render('nginx-static.conf.template',{}))
+        if not args.skip_nginx: write_atomic(output / 'nginx.conf', nginx_config)
         print(f'Configuraciones generadas en {output}', flush=True)
         if args.dry_run: return 0
     if os.geteuid() != 0: fail('Este modo requiere sudo.')
@@ -488,8 +490,6 @@ def main(argv=None):
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
     ensure_socket_directory(user,group,socket_path,install=args.mode == 'install')
     publish_static_assets()
-    if (args.mode == 'install' and not args.skip_nginx) or (args.mode == 'update' and NGINX_FILE.is_file()):
-        install_nginx_static_snippet()
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:

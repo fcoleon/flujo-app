@@ -2,7 +2,14 @@ server {
     listen 80;
     server_name @@SERVER_NAME@@;
 
-    include /etc/nginx/snippets/flujo-app-static.conf;
+    # BEGIN flujo-app assets
+    location ~ "^/assets/(style\.[0-9a-f]{16}\.css|app\.[0-9a-f]{16}\.js|favicon\.[0-9a-f]{16}\.svg)$" {
+        root /var/lib/flujo-app;
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+    }
+    # END flujo-app assets
 
     # La aplicación escucha en un socket Unix local, accesible para Nginx.
     location / {
