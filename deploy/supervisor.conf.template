@@ -1,8 +1,8 @@
 [program:flujo-app]
 directory=@@APP_DIR@@
-command=@@APP_DIR@@/.venv/bin/python -u @@APP_DIR@@/app.py
+command=@@APP_DIR@@/.venv/bin/gunicorn --config @@APP_DIR@@/deploy/gunicorn.conf.py app:app
 user=@@APP_USER@@
-environment=APP_CONFIG="@@CONFIG_PATH@@",FLUJO_CONFIG_ONLY="1",PYTHONUNBUFFERED="1"
+environment=APP_CONFIG="@@CONFIG_PATH@@",FLUJO_CONFIG_ONLY="1",FLUJO_BEHIND_PROXY="1",PYTHONUNBUFFERED="1"
 autostart=true
 autorestart=true
 startsecs=3

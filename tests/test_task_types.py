@@ -5,6 +5,8 @@ import sqlite3
 import tempfile
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import patch
 from pathlib import Path
 import sys
@@ -32,18 +34,18 @@ class TaskTypesTest(unittest.TestCase):
         app.DB = self.old_db
         self.tmp.cleanup()
 
-    def post(self, path, data, user=1):
-        handler = app.Handler.__new__(app.Handler)
-        raw = json.dumps(data).encode()
-        handler.path = '/api/' + path
-        handler.headers = {'Content-Length': str(len(raw))}
-        handler.rfile = io.BytesIO(raw)
-        handler.user = lambda c: c.execute('SELECT id,name,username,admin FROM users WHERE id=?',(user,)).fetchone()
-        handler.respond = lambda data, status=200: (status, data)
-        result = []
-        handler.respond = lambda data, status=200: result.append((status, data))
-        handler.do_POST()
-        return result[0]
+    def client_for(self,user):
+        token=f'test-session-{user}'
+        with app.db() as c: c.execute('INSERT OR IGNORE INTO sessions VALUES(?,?)',(token,user))
+        client=app.app.test_client();client.set_cookie('session',token);return client
+
+    def post(self,path,data,user=1):
+        response=self.client_for(user).post('/api/'+path,json=data)
+        return response.status_code,response.get_json()
+
+    def get(self,path,user=1):
+        response=self.client_for(user).get('/api/'+path)
+        return response.status_code,response.get_json()
 
     def test_types_state_reset_permissions_and_history(self):
         status, res = self.post('task-types', {'project_id': 1, 'name': 'Incidencia'})
@@ -143,21 +145,12 @@ class TaskTypesTest(unittest.TestCase):
         with app.db() as c:
             salt='ab'*16
             c.execute('UPDATE users SET salt=?,password=? WHERE id=2',(salt,app.hashpw('clave123',salt)))
-        login=app.Handler.__new__(app.Handler);login.path='/api/login'
-        raw=json.dumps({'username':'editor','password':'clave123'}).encode()
-        login.headers={'Content-Length':str(len(raw))};login.rfile=io.BytesIO(raw);login.wfile=io.BytesIO()
-        login.user=lambda c:None;sent=[];login.send_response=lambda status:sent.append(('status',status))
-        login.send_header=lambda key,value:sent.append((key,value));login.end_headers=lambda:None
-        login.do_POST()
-        self.assertIn(('status',200),sent)
-        cookie=next(value for key,value in sent if key=='Set-Cookie')
-        session=app.Handler.__new__(app.Handler);session.path='/api/session';session.headers={'Cookie':cookie.split(';')[0]}
-        result=[];session.respond=lambda data,status=200:result.append((status,data));session.do_GET()
-        self.assertEqual(result[0][1]['user']['id'],2);self.assertTrue(result[0][1]['blocked'])
-        def get(path,user):
-            handler=app.Handler.__new__(app.Handler);handler.path='/api/'+path
-            handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=?',(user,)).fetchone()
-            result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET();return result[0]
+        client=app.app.test_client()
+        login=client.post('/api/login',json={'username':'editor','password':'clave123'})
+        self.assertEqual(login.status_code,200)
+        session=client.get('/api/session').get_json()
+        self.assertEqual(session['user']['id'],2);self.assertTrue(session['blocked'])
+        get=self.get
         self.assertTrue(get('session',2)[1]['blocked'])
         status,body=get('data',2)
         self.assertEqual(status,403);self.assertTrue(body['blocked']);self.assertNotIn('tasks',body)
@@ -177,11 +170,9 @@ class TaskTypesTest(unittest.TestCase):
         for body in ('Uno','Dos'):
             self.assertEqual(self.post('comments',{'task_id':task,'body':body})[0],200)
         self.post('comments',{'task_id':private,'body':'Privado'})
-        handler=app.Handler.__new__(app.Handler);handler.path='/api/data'
-        handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=3').fetchone()
-        result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET()
-        self.assertEqual(result[0][0],200)
-        counts={t['id']:t['comment_count'] for t in result[0][1]['tasks']}
+        status,result=self.get('data',3)
+        self.assertEqual(status,200)
+        counts={t['id']:t['comment_count'] for t in result['tasks']}
         self.assertEqual(counts[task],2);self.assertEqual(counts[empty],0);self.assertNotIn(private,counts)
 
     def test_delete_type_rejects_in_use_and_preserves_metrics(self):
@@ -282,9 +273,7 @@ class TaskTypesTest(unittest.TestCase):
             self.assertEqual(app.analytics(c,2,'2026-11')['totals'],{'created':0,'completed':2,'reopened':1})
             self.assertEqual(app.analytics(c,1,'2026-11',999)['totals']['completed'],0)
             with self.assertRaises(ValueError): app.analytics(c,1,'2026-13')
-        def get(user):
-            handler=app.Handler.__new__(app.Handler);handler.path='/api/analytics?project_id=1&month=2026-11';handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=?',(user,)).fetchone()
-            result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET();return result[0]
+        def get(user): return self.get('analytics?project_id=1&month=2026-11',user)
         self.assertEqual(get(2)[0],403)
         self.assertEqual(get(3)[0],403)
         self.assertEqual(get(1)[1]['totals']['completed'],2)
@@ -371,9 +360,7 @@ class TaskTypesTest(unittest.TestCase):
         with_project=self.post('tasks',{'title':'Proyecto privado','project_id':2,'column_id':2})[1]['id']
         self.post('task/update',{'id':with_project,'assignee_id':4})
         unrelated=self.post('tasks',{'title':'Otra sin proyecto'})[1]['id']
-        def accessible(user):
-            handler=app.Handler.__new__(app.Handler);handler.path='/api/data';handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=?',(user,)).fetchone()
-            result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET();return {t['id']:t for t in result[0][1]['tasks']}
+        def accessible(user): return {t['id']:t for t in self.get('data',user)[1]['tasks']}
         tasks=accessible(4)
         self.assertIn(orphan,tasks);self.assertFalse(tasks[orphan]['has_projects']);self.assertTrue(tasks[orphan]['can_edit'])
         self.assertNotIn(with_project,tasks);self.assertNotIn(unrelated,tasks)
@@ -406,11 +393,7 @@ class TaskTypesTest(unittest.TestCase):
         child=self.post('tasks',{'title':'Hija','parent_id':parent})[1]['id']
         grandchild=self.post('tasks',{'title':'Nieta','parent_id':child})[1]['id']
         self.post('task/update',{'id':child,'assignee_id':4})
-        def data_for(user):
-            handler=app.Handler.__new__(app.Handler);handler.path='/api/data'
-            handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=?',(user,)).fetchone()
-            result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET()
-            return {t['id']:t for t in result[0][1]['tasks']}
+        def data_for(user): return {t['id']:t for t in self.get('data',user)[1]['tasks']}
         self.assertNotIn(child,data_for(4))
         visible=data_for(3)
         self.assertEqual(visible[child]['inherited_project_ids'],[1]);self.assertTrue(visible[child]['has_projects'])
@@ -439,15 +422,48 @@ class TaskTypesTest(unittest.TestCase):
             after={r['id']:r['public_id'] for r in c.execute('SELECT id,public_id FROM tasks WHERE id IN (?,?,?)',(visible,private,subtask))}
             self.assertEqual(before,after)
             self.assertEqual(uuid.UUID(c.execute('SELECT public_id FROM tasks WHERE id=?',(legacy,)).fetchone()[0]).version,4)
-        handler=app.Handler.__new__(app.Handler);handler.path='/api/data';handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=2').fetchone();result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET()
-        ids={task['public_id'] for task in result[0][1]['tasks']}
+        ids={task['public_id'] for task in self.get('data',2)[1]['tasks']}
         self.assertIn(before[visible],ids);self.assertIn(before[subtask],ids);self.assertNotIn(before[private],ids)
 
     def test_task_link_route_serves_application(self):
-        handler=app.Handler.__new__(app.Handler);handler.path='/t/'+str(uuid.uuid4())+'?project=1';handler.wfile=io.BytesIO();status=[]
-        handler.send_response=lambda code:status.append(code);handler.send_header=lambda *args:None;handler.end_headers=lambda:None
-        handler.do_GET()
-        self.assertEqual(status,[200]);self.assertIn(b'<div id="app">',handler.wfile.getvalue())
+        client=app.app.test_client()
+        response=client.get('/t/'+str(uuid.uuid4())+'?project=1')
+        self.assertEqual(response.status_code,200);self.assertIn(b'<div id="app">',response.data)
+        for path in ('/','/app.js','/style.css','/favicon.svg'):
+            self.assertEqual(client.get(path).status_code,200)
+        self.assertEqual(client.get('/t/no-es-uuid').status_code,404)
+
+    def test_flask_authentication_cookie_and_request_limits(self):
+        client=app.app.test_client()
+        self.assertEqual(client.get('/api/data').status_code,401)
+        self.assertEqual(client.post('/api/tasks',json={'title':'No'}).status_code,401)
+        with app.db() as c:
+            salt='ab'*16
+            c.execute('UPDATE users SET salt=?,password=? WHERE id=2',(salt,app.hashpw('clave123',salt)))
+        login=client.post('/api/login',json={'username':'editor','password':'clave123'},base_url='https://localhost')
+        self.assertEqual(login.status_code,200)
+        cookie=login.headers['Set-Cookie']
+        self.assertIn('HttpOnly',cookie);self.assertIn('SameSite=Strict',cookie);self.assertIn('Secure',cookie)
+        self.assertEqual(client.get('/api/data',base_url='https://localhost').status_code,200)
+        too_large=client.post('/api/comments',data='x'*100001,base_url='https://localhost')
+        self.assertEqual(too_large.status_code,413)
+        self.assertEqual(client.post('/api/logout',json={},base_url='https://localhost').status_code,200)
+        self.assertEqual(client.get('/api/data',base_url='https://localhost').status_code,401)
+
+    def test_first_account_creation_is_serialized_between_requests(self):
+        old=app.DB
+        with tempfile.TemporaryDirectory() as temp:
+            try:
+                app.DB=os.path.join(temp,'new.db');app.init();barrier=Barrier(2)
+                def create(name):
+                    client=app.app.test_client();barrier.wait()
+                    return client.post('/api/setup',json={'name':name,'username':name,'password':'clave123'}).status_code
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    statuses=list(pool.map(create,['uno','dos']))
+                self.assertEqual(sorted(statuses),[200,400])
+                with app.db() as c: self.assertEqual(c.execute('SELECT count(*) FROM users').fetchone()[0],1)
+            finally:
+                app.DB=old
 
     def test_existing_tasks_migration(self):
         with app.db() as c:

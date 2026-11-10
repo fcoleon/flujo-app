@@ -3,6 +3,8 @@ import errno
 import os
 from pathlib import Path
 import subprocess
+import stat
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,19 +17,19 @@ spec.loader.exec_module(deploy)
 
 class DeploymentConfigTest(unittest.TestCase):
     def test_generated_templates_fill_all_values_and_preserve_nginx_variables(self):
-        values = {'APP_DIR': '/srv/flujo', 'APP_USER': 'ubuntu', 'PORT': 8100,
-                  'CONFIG_PATH': '/srv/flujo/config.ini',
+        values = {'APP_DIR': '/srv/flujo', 'APP_USER': 'ubuntu', 'SOCKET_PATH': '/run/flujo/flujo.sock',
+                  'CONFIG_PATH': '/srv/flujo/config.ini', 'NGINX_GROUP': 'www-data',
                   'SERVER_NAME': 'tareas.ejemplo.com'}
         supervisor = deploy.render('supervisor.conf.template', values)
         nginx = deploy.render('nginx.conf.template', values)
-        self.assertIn('command=/srv/flujo/.venv/bin/python -u /srv/flujo/app.py', supervisor)
+        self.assertIn('command=/srv/flujo/.venv/bin/gunicorn --config /srv/flujo/deploy/gunicorn.conf.py app:app', supervisor)
         self.assertIn('directory=/srv/flujo', supervisor)
         self.assertIn('user=ubuntu', supervisor)
         self.assertIn('APP_CONFIG="/srv/flujo/config.ini"', supervisor)
         self.assertIn('FLUJO_CONFIG_ONLY="1"', supervisor)
         self.assertNotIn('TASKS_DB=', supervisor)
         self.assertIn('server_name tareas.ejemplo.com;', nginx)
-        self.assertIn('proxy_pass http://127.0.0.1:8100;', nginx)
+        self.assertIn('proxy_pass http://unix:/run/flujo/flujo.sock;', nginx)
         self.assertIn('proxy_set_header Host $host;', nginx)
         self.assertNotIn('@@', supervisor + nginx)
 
@@ -108,26 +110,44 @@ class DeploymentConfigTest(unittest.TestCase):
                 ['systemctl', 'reload', 'nginx'],
             ])
 
-    def test_port_conflict_is_rejected_and_own_process_can_be_updated(self):
-        occupied = OSError(errno.EADDRINUSE, 'address in use')
-        with patch.object(deploy.socket, 'socket') as sock, \
-             patch.object(deploy.shutil, 'which', return_value='/usr/bin/ss'), \
-             patch.object(deploy.subprocess, 'run') as run:
-            sock.return_value.__enter__.return_value.bind.side_effect = occupied
-            run.return_value = subprocess.CompletedProcess([], 0, 'LISTEN 0 128 127.0.0.1:8000 0.0.0.0:* users:(("python",pid=123,fd=3))\n', '')
-            with self.assertRaisesRegex(ValueError, 'config.ini'):
-                deploy.check_app_port(8000, None)
-            with self.assertRaisesRegex(ValueError, 'config.ini'):
-                deploy.check_app_port(8000, 456)
-            deploy.check_app_port(8000, 123)
-            run.return_value = subprocess.CompletedProcess([], 0, 'LISTEN 0 128 127.0.0.1:8000 0.0.0.0:*\n', '')
-            with self.assertRaisesRegex(ValueError, 'config.ini'):
-                deploy.check_app_port(8000, 123)
+    def test_socket_path_and_conflicts(self):
+        self.assertEqual(deploy.validate_socket_path('/run/flujo/app.sock'),Path('/run/flujo/app.sock'))
+        for path in ('/tmp/app.sock','/run/flujo/../other.sock','/run/flujo/not-socket'):
+            with self.subTest(path=path),self.assertRaises(ValueError): deploy.validate_socket_path(path)
+        with tempfile.TemporaryDirectory() as tmp:
+            existing=Path(tmp)/'app.sock';existing.write_text('no borrar')
+            with self.assertRaisesRegex(ValueError,'otro archivo'):
+                deploy.check_socket(existing,deploy.pwd.getpwuid(os.getuid()).pw_name,None)
+            self.assertEqual(existing.read_text(),'no borrar')
 
-    def test_free_port_does_not_require_ss(self):
-        with patch.object(deploy.socket, 'socket'), patch.object(deploy.subprocess, 'run') as run:
-            deploy.check_app_port(8100, None)
-            run.assert_not_called()
+    def test_active_socket_must_belong_to_own_supervisor_process(self):
+        class ExistingSocket:
+            def is_symlink(self): return False
+            def exists(self): return True
+            def stat(self): return SimpleNamespace(st_mode=stat.S_IFSOCK,st_uid=os.getuid())
+            def __str__(self): return '/run/flujo/app.sock'
+        path=ExistingSocket();user=deploy.pwd.getpwuid(os.getuid()).pw_name
+        with patch.object(deploy.socket,'socket') as sock, patch.object(deploy.shutil,'which',return_value='/usr/bin/ss'), \
+             patch.object(deploy.subprocess,'run') as run:
+            probe=sock.return_value.__enter__.return_value;probe.connect_ex.return_value=0
+            run.return_value=subprocess.CompletedProcess([],0,'u_str LISTEN 0 128 /run/flujo/app.sock 1 * 0 users:(("gunicorn",pid=123,fd=3))\n','')
+            deploy.check_socket(path,user,123)
+            with self.assertRaisesRegex(ValueError,'en uso'): deploy.check_socket(path,user,456)
+            probe.connect_ex.return_value=errno.ECONNREFUSED
+            deploy.check_socket(path,user,None)
+
+    def test_socket_directory_configuration_never_overwrites_other_installation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);config=base/'tmpfiles.conf';directory=base/'flujo'
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            config.write_text('d /run/flujo 0750 otra otra -\n')
+            with patch.object(deploy,'TMPFILES_FILE',config),patch.object(deploy,'SOCKET_DIR',directory), \
+                 patch.object(deploy,'run') as run:
+                with self.assertRaisesRegex(ValueError,'otra configuración'):
+                    deploy.ensure_socket_directory(user,group,install=True)
+                run.assert_not_called()
+            self.assertEqual(config.read_text(),'d /run/flujo 0750 otra otra -\n')
 
     def test_existing_supervisor_program_from_another_configuration_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,23 +184,29 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy.shutil, 'which', return_value='/usr/bin/fake'), \
                  patch.object(deploy, 'check_program_identity', return_value=123), \
                  patch.object(deploy, 'installed_supervisor_settings', return_value=user), \
-                 patch.object(deploy, 'check_app_port') as port_check, \
-                 patch.object(deploy, 'check_nginx_port') as nginx_check, \
+                 patch.object(deploy, 'check_socket') as socket_check, \
+                 patch.object(deploy, 'check_nginx_socket') as nginx_check, \
+                 patch.object(deploy, 'installed_socket_group', return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
+                 patch.object(deploy, 'ensure_socket_directory') as socket_dir, \
                  patch.object(deploy, 'prepare_venv') as prepare, patch.object(deploy, 'run') as run:
                 self.assertEqual(deploy.main(['update']),0)
-            port_check.assert_called_once_with(8100,123)
-            nginx_check.assert_called_once_with(8100)
+            socket_check.assert_called_once_with(Path('/run/flujo/flujo.sock'),user,123)
+            nginx_check.assert_called_once_with(Path('/run/flujo/flujo.sock'))
+            self.assertFalse(socket_dir.call_args.kwargs['install'])
             self.assertFalse(prepare.call_args.kwargs['create'])
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['supervisorctl','restart','flujo-app'], ['supervisorctl','status','flujo-app']])
 
-    def test_update_refuses_mismatched_nginx_port(self):
+    def test_update_refuses_mismatched_nginx_socket(self):
         with tempfile.TemporaryDirectory() as tmp:
-            site=Path(tmp)/'flujo-app';site.write_text('proxy_pass http://127.0.0.1:8000;')
+            site=Path(tmp)/'flujo-app';site.write_text('proxy_pass http://unix:/run/flujo/flujo.sock:;')
             with patch.object(deploy,'NGINX_FILE',site):
-                deploy.check_nginx_port(8000)
-                with self.assertRaisesRegex(ValueError,'otro puerto'):
-                    deploy.check_nginx_port(8100)
+                deploy.check_nginx_socket('/run/flujo/flujo.sock')
+                with self.assertRaisesRegex(ValueError,'otro destino'):
+                    deploy.check_nginx_socket('/run/flujo/otro.sock')
+                site.write_text('proxy_pass http://127.0.0.1:8000;')
+                with self.assertRaisesRegex(ValueError,'otro destino'):
+                    deploy.check_nginx_socket('/run/flujo/flujo.sock')
 
     def test_old_supervisor_environment_requires_explicit_migration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,10 +215,10 @@ class DeploymentConfigTest(unittest.TestCase):
             with patch.object(deploy,'SUPERVISOR_FILE',config):
                 with self.assertRaisesRegex(ValueError,'versión anterior'):
                     deploy.installed_supervisor_settings()
-                config.write_text(f'[program:flujo-app]\nuser=ubuntu\nenvironment=APP_CONFIG="{deploy.APP_DIR}/config.ini",FLUJO_CONFIG_ONLY="1"\n')
+                config.write_text(f'[program:flujo-app]\nuser=ubuntu\ncommand={deploy.APP_DIR}/.venv/bin/gunicorn --config {deploy.APP_DIR}/deploy/gunicorn.conf.py app:app\nenvironment=APP_CONFIG="{deploy.APP_DIR}/config.ini",FLUJO_CONFIG_ONLY="1"\n')
                 self.assertEqual(deploy.installed_supervisor_settings(),'ubuntu')
 
-    def test_install_dry_run_uses_ini_port(self):
+    def test_install_dry_run_uses_ini_socket(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve();(root/'config.ini').write_text('[app]\nport=8123\ntimezone=UTC\ndatabase=tasks.db\n')
             user=deploy.pwd.getpwuid(os.getuid()).pw_name
@@ -200,7 +226,7 @@ class DeploymentConfigTest(unittest.TestCase):
                 self.assertEqual(deploy.main(['install','--server-name','tareas.example.com','--user',user,'--dry-run','--output-dir',str(root/'generated')]),0)
             nginx=(root/'generated/nginx.conf').read_text()
             supervisor=(root/'generated/supervisor.conf').read_text()
-            self.assertIn('proxy_pass http://127.0.0.1:8123;',nginx)
+            self.assertIn('proxy_pass http://unix:/run/flujo/flujo.sock;',nginx)
             self.assertIn(f'APP_CONFIG="{root}/config.ini"',supervisor)
 
 

@@ -1,6 +1,6 @@
 # Flujo
 
-Aplicación interna de gestión de tareas con tableros Kanban, un único workspace, Python y SQLite. Utiliza la biblioteca estándar de Python; no requiere instalar paquetes adicionales.
+Aplicación interna de gestión de tareas con tableros Kanban, un único workspace, Flask y SQLite. En producción usa Gunicorn detrás de Nginx.
 
 ## Requisitos e inicio
 
@@ -9,12 +9,13 @@ Se requiere Python 3.9 o superior y una base de datos de zonas horarias del sist
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
 python app.py
 ```
 
 Abre [http://localhost:8000](http://localhost:8000) y crea la primera cuenta, que será administradora del workspace. El servidor escucha solo en `127.0.0.1` y guarda los datos en `tasks.db`. La base de datos y el entorno virtual no se incluyen en Git.
 
-Para personalizar la base de datos, la zona horaria o el puerto, copia `config.example.ini` a `config.ini` y edita la sección `[app]`. Las rutas relativas de la base se interpretan desde la raíz del proyecto. Sin `config.ini`, se usan los valores predeterminados del ejemplo. `config.ini` está excluido de Git.
+Para personalizar la base de datos, la zona horaria, el puerto local o el socket de producción, copia `config.example.ini` a `config.ini` y edita la sección `[app]`. Las rutas relativas de la base se interpretan desde la raíz del proyecto. Sin `config.ini`, se usan los valores predeterminados del ejemplo. `config.ini` está excluido de Git. El servidor local usa TCP; Gunicorn usa el socket Unix en producción.
 
 En ejecución local, las siguientes variables opcionales tienen prioridad sobre el archivo:
 
@@ -67,6 +68,6 @@ El desglose por persona atribuye las creaciones a su autor y las finalizaciones 
 
 ## Acceso y despliegue
 
-El acceso mediante usuario y contraseña es provisional. Las contraseñas se almacenan con PBKDF2 y sal, y las sesiones usan cookies HttpOnly. Antes de exponer la aplicación en una red o en producción se necesita HTTPS, endurecimiento de sesiones y una estrategia de autenticación adecuada. Los enlaces generados con `localhost` solo funcionan en el mismo computador; para compartirlos entre dispositivos se necesita una dirección accesible para el equipo.
+El acceso mediante usuario y contraseña es provisional. Las contraseñas se almacenan con PBKDF2 y sal; las cookies de sesión usan HttpOnly y SameSite, y se marcan Secure cuando la conexión es HTTPS. Antes de exponer la aplicación en una red o en producción se necesita HTTPS, endurecimiento de sesiones y una estrategia de autenticación adecuada. Los enlaces generados con `localhost` solo funcionan en el mismo computador; para compartirlos entre dispositivos se necesita una dirección accesible para el equipo.
 
 Para una instancia Ubuntu EC2, consulta la [guía de despliegue con Supervisor y Nginx](deploy/README.md). Incluye un script para generar e instalar las configuraciones a partir de la ruta de la aplicación.

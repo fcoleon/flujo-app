@@ -3,6 +3,7 @@
 import argparse
 import configparser
 import errno
+import grp
 import ipaddress
 import os
 import pwd
@@ -11,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import stat
 from pathlib import Path
 
 DEPLOY_DIR = Path(__file__).resolve().parent
@@ -22,6 +24,8 @@ PROGRAM = 'flujo-app'
 SUPERVISOR_FILE = Path('/etc/supervisor/conf.d/flujo-app.conf')
 NGINX_FILE = Path('/etc/nginx/sites-available/flujo-app')
 NGINX_LINK = Path('/etc/nginx/sites-enabled/flujo-app')
+SOCKET_DIR = Path('/run/flujo')
+TMPFILES_FILE = Path('/etc/tmpfiles.d/flujo-app.conf')
 SAFE_PATH = re.compile(r'^/[A-Za-z0-9_./+@-]+$')
 SAFE_USER = re.compile(r'^[a-z_][a-z0-9_-]*[$]?$')
 
@@ -96,8 +100,9 @@ def check_program_identity():
             with SUPERVISOR_FILE.open(encoding='utf-8') as stream:
                 config.read_file(stream)
             section = config['program:' + PROGRAM]
-            expected = f'{APP_DIR}/.venv/bin/python -u {APP_DIR}/app.py'
-            if section.get('directory') != str(APP_DIR) or section.get('command') != expected:
+            expected = {f'{APP_DIR}/.venv/bin/python -u {APP_DIR}/app.py',
+                        f'{APP_DIR}/.venv/bin/gunicorn --config {APP_DIR}/deploy/gunicorn.conf.py app:app'}
+            if section.get('directory') != str(APP_DIR) or section.get('command') not in expected:
                 raise ValueError()
         except (configparser.Error, KeyError, ValueError):
             fail(f'{SUPERVISOR_FILE} pertenece a otra configuración o ruta. Revísala antes de continuar.')
@@ -107,24 +112,57 @@ def check_program_identity():
     return pid
 
 
-def check_app_port(port, own_pid):
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            probe.bind(('127.0.0.1', port))
-        return
-    except OSError as exc:
-        if exc.errno != errno.EADDRINUSE:
-            raise
-    if not shutil.which('ss'):
-        fail(f'El puerto {port} está ocupado y no se puede identificar su proceso; instala iproute2 o cambia port en config.ini.')
-    result = subprocess.run(['ss', '-H', '-ltnp', f'sport = :{port}'], capture_output=True, text=True, check=True)
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    # Rechaza también resultados sin PID o ambiguos: no se detienen otros procesos.
-    if own_pid and lines and all(set(re.findall(r'pid=(\d+)', line)) == {str(own_pid)} for line in lines):
-        return
-    fail(f'El puerto local {port} ya está ocupado por otro proceso o no se pudo verificar su propietario. '
-         f'Cambia port en config.ini. Consulta: sudo ss -ltnp "sport = :{port}"')
+def validate_socket_path(value):
+    path = Path(check_path(value, 'La ruta del socket'))
+    if path.parent != SOCKET_DIR or len(os.fsencode(path)) > 100 or not re.fullmatch(r'[A-Za-z0-9_-]+\.sock', path.name):
+        fail('El socket de producción debe estar en /run/flujo y terminar en .sock.')
+    return path
+
+
+def check_socket(path, user, own_pid):
+    if path.is_symlink(): fail(f'La ruta del socket es un enlace simbólico: {path}')
+    if not path.exists(): return
+    info = path.stat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != pwd.getpwnam(user).pw_uid:
+        fail(f'La ruta del socket está ocupada por otro archivo o usuario: {path}')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        result = probe.connect_ex(str(path))
+    if result == errno.ECONNREFUSED: return  # Socket obsoleto del mismo usuario.
+    if result == 0 and own_pid and shutil.which('ss'):
+        output = subprocess.run(['ss','-xlnp'],capture_output=True,text=True,check=True).stdout
+        for line in output.splitlines():
+            if str(path) in line.split() and str(own_pid) in re.findall(r'pid=(\d+)',line): return
+    fail(f'El socket está en uso o no se puede verificar su propietario: {path}')
+
+
+def ensure_socket_directory(user, group, install):
+    uid = pwd.getpwnam(user).pw_uid
+    gid = grp.getgrnam(group).gr_gid
+    content = render('tmpfiles.conf.template', {'APP_USER':user,'NGINX_GROUP':group})
+    if SOCKET_DIR.is_symlink() or (SOCKET_DIR.exists() and not SOCKET_DIR.is_dir()):
+        fail(f'El directorio del socket no es un directorio seguro: {SOCKET_DIR}')
+    if SOCKET_DIR.exists():
+        info=SOCKET_DIR.stat()
+        if (info.st_uid,info.st_gid)!=(uid,gid):
+            fail(f'{SOCKET_DIR} pertenece a otro usuario o grupo; revísalo antes de continuar.')
+    if TMPFILES_FILE.is_symlink() or (TMPFILES_FILE.exists() and not TMPFILES_FILE.is_file()):
+        fail(f'La configuración tmpfiles no es un archivo regular: {TMPFILES_FILE}')
+    if TMPFILES_FILE.exists() and TMPFILES_FILE.read_text(encoding='utf-8')!=content:
+        fail(f'{TMPFILES_FILE} ya existe con otra configuración.')
+    if not TMPFILES_FILE.exists():
+        if not install: fail('Falta la configuración del socket; ejecuta primero install.')
+        write_atomic(TMPFILES_FILE,content)
+    run(['systemd-tmpfiles','--create',str(TMPFILES_FILE)])
+
+
+def installed_socket_group(user):
+    if TMPFILES_FILE.is_symlink() or not TMPFILES_FILE.is_file():
+        fail('Falta la configuración del socket; ejecuta primero install.')
+    parts = TMPFILES_FILE.read_text(encoding='utf-8').split()
+    if len(parts)!=6 or parts[:4]!=['d',str(SOCKET_DIR),'0750',user] or parts[5]!='-':
+        fail('La configuración tmpfiles del socket no coincide con esta instalación.')
+    return parts[4]
 
 
 def prepare_venv(user, db_path, timezone, create=True):
@@ -159,6 +197,7 @@ def prepare_venv(user, db_path, timezone, create=True):
     if db_path.exists():
         check_writable(user, db_path, 'la base de datos SQLite')
         as_user(user, 'test', '-r', db_path)
+    as_user(user, python, '-m', 'pip', 'install', '-r', APP_DIR / 'requirements.txt')
 
 
 def installed_supervisor_settings():
@@ -173,20 +212,24 @@ def installed_supervisor_settings():
     if expected_path not in env or 'FLUJO_CONFIG_ONLY="1"' not in env:
         fail('La configuración de Supervisor es de una versión anterior. Copia sus valores a config.ini '
              'y ejecuta install --skip-nginx para actualizarla sin modificar Nginx.')
+    expected = f'{APP_DIR}/.venv/bin/gunicorn --config {APP_DIR}/deploy/gunicorn.conf.py app:app'
+    if section.get('command') != expected:
+        fail('Supervisor usa el servidor anterior. Sigue los pasos de migración en deploy/README.md.')
     return section['user']
 
 
-def check_nginx_port(port):
+def check_nginx_socket(socket_path):
     if not NGINX_FILE.is_file():
-        print('Aviso: verifica que tu proxy Nginx apunte al puerto configurado.', flush=True)
+        print('Aviso: verifica que tu proxy Nginx apunte al socket configurado.', flush=True)
         return
     text = NGINX_FILE.read_text(encoding='utf-8')
-    ports = set(re.findall(r'proxy_pass\s+http://127\.0\.0\.1:(\d+)/?\s*;', text))
-    if ports and ports != {str(port)}:
-        fail(f'Nginx apunta a otro puerto ({", ".join(sorted(ports))}), pero config.ini indica {port}. '
-             'Actualiza Nginx antes de continuar.')
-    if not ports:
-        print('Aviso: verifica manualmente que Nginx apunte al puerto configurado.', flush=True)
+    upstreams = set(re.findall(r'proxy_pass\s+(http://(?:127\.0\.0\.1:\d+/?|unix:[^;\s]+))\s*;', text))
+    upstreams = {upstream.removesuffix(':') for upstream in upstreams}
+    expected = f'http://unix:{socket_path}'
+    if upstreams and upstreams != {expected}:
+        fail('Nginx apunta a otro destino. Actualiza proxy_pass al socket de config.ini antes de continuar.')
+    if not upstreams:
+        print('Aviso: verifica manualmente que Nginx apunte al socket configurado.', flush=True)
 
 
 def write_atomic(path, content):
@@ -263,6 +306,7 @@ def main(argv=None):
     install.add_argument('--user', default=os.environ.get('SUDO_USER') or pwd.getpwuid(os.getuid()).pw_name,
                          help='Usuario Linux sin privilegios que ejecutará la aplicación')
     install.add_argument('--skip-nginx', action='store_true', help='Conserva el Nginx existente')
+    install.add_argument('--nginx-group', default='www-data', help='Grupo del proceso Nginx (predeterminado: www-data)')
     install.add_argument('--dry-run', action='store_true', help='Solo genera los archivos para revisión')
     install.add_argument('--output-dir', default=str(DEPLOY_DIR / 'generated'), help='Carpeta de archivos generados')
     modes.add_parser('update', help='Reinicia la instalación existente sin modificar Nginx')
@@ -271,17 +315,19 @@ def main(argv=None):
         parser.error('install requiere --server-name, excepto con --skip-nginx')
     config_path = APP_DIR / 'config.ini'
     settings = load_settings(config_path=config_path, environ={'FLUJO_CONFIG_ONLY': '1'})
-    if settings['port'] < 1024: fail('Para el despliegue el puerto debe estar entre 1024 y 65535.')
     app_dir = check_path(APP_DIR, 'La ruta de la aplicación')
     config_file = check_path(config_path, 'La ruta de configuración')
     db_path = Path(settings['database'])
+    socket_path = validate_socket_path(settings['socket'])
     if args.mode == 'install':
         if not SAFE_USER.fullmatch(args.user) or args.user == 'root':
             fail('Indica un usuario Linux sin privilegios con --user.')
         try: pwd.getpwnam(args.user)
         except KeyError: fail(f'No existe el usuario Linux {args.user}.')
-        values = {'APP_DIR': app_dir, 'APP_USER': args.user, 'PORT': settings['port'], 'CONFIG_PATH': config_file}
+        if not SAFE_USER.fullmatch(args.nginx_group): fail('Grupo de Nginx inválido.')
+        values = {'APP_DIR': app_dir, 'APP_USER': args.user, 'SOCKET_PATH': socket_path, 'CONFIG_PATH': config_file, 'NGINX_GROUP': args.nginx_group}
         supervisor_config = render('supervisor.conf.template', values)
+        tmpfiles_config = render('tmpfiles.conf.template', values)
         nginx_config = ''
         if not args.skip_nginx:
             values['SERVER_NAME'] = check_server_name(args.server_name)
@@ -289,11 +335,12 @@ def main(argv=None):
         output = Path(args.output_dir).expanduser().resolve()
         output.mkdir(parents=True, exist_ok=True)
         write_atomic(output / 'supervisor.conf', supervisor_config)
+        write_atomic(output / 'tmpfiles.conf', tmpfiles_config)
         if not args.skip_nginx: write_atomic(output / 'nginx.conf', nginx_config)
         print(f'Configuraciones generadas en {output}', flush=True)
         if args.dry_run: return 0
     if os.geteuid() != 0: fail('Este modo requiere sudo.')
-    for binary in ('runuser', 'supervisorctl'):
+    for binary in ('runuser', 'supervisorctl', 'systemd-tmpfiles'):
         if not shutil.which(binary): fail(f'Falta {binary}; revisa deploy/README.md.')
     own_pid = check_program_identity()
     if args.mode == 'update':
@@ -303,9 +350,13 @@ def main(argv=None):
         except KeyError: fail(f'No existe el usuario Linux {user}.')
     else:
         user = args.user
-    check_app_port(settings['port'], own_pid)
-    if args.mode == 'update' or args.skip_nginx: check_nginx_port(settings['port'])
+    group = installed_socket_group(user) if args.mode == 'update' else args.nginx_group
+    try: grp.getgrnam(group)
+    except KeyError: fail(f'No existe el grupo de Nginx {group}.')
+    check_socket(socket_path,user,own_pid)
+    if args.mode == 'update' or args.skip_nginx: check_nginx_socket(socket_path)
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
+    ensure_socket_directory(user,group,install=args.mode == 'install')
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:

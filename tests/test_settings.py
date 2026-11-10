@@ -37,7 +37,7 @@ class SettingsTest(unittest.TestCase):
             config=Path(tmp)/'config.ini'
             with self.assertRaisesRegex(ValueError,'No existe'):
                 load_settings(config,environ={})
-            for contents in ('[app]\nport=99999\n','[app]\ntimezone=Invalid/Zone\n','[app]\ndatabase=\n','[other]\nx=1\n'):
+            for contents in ('[app]\nport=99999\n','[app]\ntimezone=Invalid/Zone\n','[app]\ndatabase=\n','[app]\nsocket=relative.sock\n','[other]\nx=1\n'):
                 config.write_text(contents)
                 with self.subTest(contents=contents), self.assertRaises(ValueError):
                     load_settings(config,environ={})

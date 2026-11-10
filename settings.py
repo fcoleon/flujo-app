@@ -21,7 +21,8 @@ def load_settings(config_path=None, environ=None):
         raise ValueError(f'No existe el archivo de configuración: {path}')
     values = {'database': parser.get('app', 'database', fallback='tasks.db'),
               'timezone': parser.get('app', 'timezone', fallback='America/Santiago'),
-              'port': parser.get('app', 'port', fallback='8000')}
+              'port': parser.get('app', 'port', fallback='8000'),
+              'socket': parser.get('app', 'socket', fallback='/run/flujo/flujo.sock')}
     if env.get('FLUJO_CONFIG_ONLY') != '1':
         for key, var in (('database', 'TASKS_DB'), ('timezone', 'TASKS_TIMEZONE'), ('port', 'PORT')):
             if var in env: values[key] = env[var]
@@ -37,4 +38,7 @@ def load_settings(config_path=None, environ=None):
         ZoneInfo(values['timezone'])
     except (ZoneInfoNotFoundError, ValueError):
         raise ValueError('Zona horaria inválida: ' + values['timezone']) from None
-    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'config_path': str(path)}
+    socket_path = Path(values['socket'])
+    if not socket_path.is_absolute() or not values['socket'].strip():
+        raise ValueError('La ruta del socket debe ser absoluta')
+    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'socket': str(socket_path), 'config_path': str(path)}
