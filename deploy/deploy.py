@@ -24,7 +24,6 @@ PROGRAM = 'flujo-app'
 SUPERVISOR_FILE = Path('/etc/supervisor/conf.d/flujo-app.conf')
 NGINX_FILE = Path('/etc/nginx/sites-available/flujo-app')
 NGINX_LINK = Path('/etc/nginx/sites-enabled/flujo-app')
-SOCKET_DIR = Path('/run/flujo')
 TMPFILES_FILE = Path('/etc/tmpfiles.d/flujo-app.conf')
 SAFE_PATH = re.compile(r'^/[A-Za-z0-9_./+@-]+$')
 SAFE_USER = re.compile(r'^[a-z_][a-z0-9_-]*[$]?$')
@@ -178,24 +177,30 @@ def ensure_socket_directory(user, group, socket_path, install):
             fail(f'{parent} pertenece a otro usuario o grupo; revísalo antes de continuar.')
     rule=f'd {parent} 0750 {user} {group} -' if managed else ''
     content=render('tmpfiles.conf.template',{'APP_USER':user,'NGINX_GROUP':group,'SOCKET_DIRECTORY_RULE':rule})
-    if not TMPFILES_FILE.exists() or TMPFILES_FILE.read_text(encoding='utf-8')!=content:
-        write_atomic(TMPFILES_FILE,content)
-    if managed: run(['systemd-tmpfiles','--create',str(TMPFILES_FILE)])
-    for flag in ('-x','-w'):
-        try: as_user(user,'test',flag,parent)
-        except subprocess.CalledProcessError: fail(f'{user} necesita permisos de acceso y escritura en {parent}.')
+    old_content = TMPFILES_FILE.read_text(encoding='utf-8') if TMPFILES_FILE.exists() else None
     try:
-        account=pwd.getpwnam(group)
-    except KeyError:
-        account=None
-    if account and account.pw_gid==gid:
-        try: as_user(group,'test','-x',parent)
-        except subprocess.CalledProcessError: fail(f'Nginx necesita permiso para atravesar {parent}.')
-    else:
-        for directory in (parent,*parent.parents):
-            info=directory.stat()
-            if not (info.st_mode & stat.S_IXOTH or (info.st_gid==gid and info.st_mode & stat.S_IXGRP)):
-                fail(f'El grupo {group} necesita permiso para atravesar {directory}.')
+        if old_content != content: write_atomic(TMPFILES_FILE, content)
+        if managed: run(['systemd-tmpfiles','--create',str(TMPFILES_FILE)])
+        for flag in ('-x','-w'):
+            try: as_user(user,'test',flag,parent)
+            except subprocess.CalledProcessError: fail(f'{user} necesita permisos de acceso y escritura en {parent}.')
+        try:
+            account=pwd.getpwnam(group)
+        except KeyError:
+            account=None
+        if account and account.pw_gid==gid:
+            try: as_user(group,'test','-x',parent)
+            except subprocess.CalledProcessError: fail(f'Nginx necesita permiso para atravesar {parent}.')
+        else:
+            for directory in (parent,*parent.parents):
+                info=directory.stat()
+                if not (info.st_mode & stat.S_IXOTH or (info.st_gid==gid and info.st_mode & stat.S_IXGRP)):
+                    fail(f'El grupo {group} necesita permiso para atravesar {directory}.')
+    except BaseException:
+        if old_content != content:
+            if old_content is None: TMPFILES_FILE.unlink(missing_ok=True)
+            else: write_atomic(TMPFILES_FILE, old_content)
+        raise
 
 
 def installed_socket_group(user):
@@ -267,6 +272,27 @@ def check_nginx_socket(socket_path):
         fail('Nginx apunta a otro destino. Actualiza proxy_pass al socket de config.ini antes de continuar.')
     if not upstreams:
         print('Aviso: verifica manualmente que Nginx apunte al socket configurado.', flush=True)
+
+
+def plan_nginx_socket_update(socket_path):
+    if not NGINX_FILE.is_file():
+        print('Aviso: verifica manualmente que Nginx apunte al socket configurado.', flush=True)
+        return None
+    if NGINX_FILE.is_symlink():
+        fail(f'Edita manualmente el destino de Nginx en {NGINX_FILE}; es un enlace simbólico.')
+    original = NGINX_FILE.read_text(encoding='utf-8')
+    pattern = re.compile(r'(?m)^(\s*proxy_pass\s+)([^;\s]+)(\s*;)')
+    matches = list(pattern.finditer(original))
+    if not matches:
+        print('Aviso: verifica manualmente que Nginx apunte al socket configurado.', flush=True)
+        return None
+    upstreams = {m.group(2).removesuffix(':') for m in matches}
+    if len(upstreams) != 1 or not re.fullmatch(r'http://(?:127\.0\.0\.1:\d+/?|unix:[^;\s]+)', next(iter(upstreams))):
+        fail('El sitio tiene varios destinos o un destino personalizado; actualiza proxy_pass manualmente.')
+    expected = f'http://unix:{socket_path}'
+    if upstreams == {expected}: return None
+    updated = pattern.sub(lambda m: m.group(1) + expected + m.group(3), original)
+    return original, updated
 
 
 def write_atomic(path, content):
@@ -346,7 +372,7 @@ def main(argv=None):
     install.add_argument('--nginx-group', default='www-data', help='Grupo del proceso Nginx (predeterminado: www-data)')
     install.add_argument('--dry-run', action='store_true', help='Solo genera los archivos para revisión')
     install.add_argument('--output-dir', default=str(DEPLOY_DIR / 'generated'), help='Carpeta de archivos generados')
-    modes.add_parser('update', help='Reinicia la instalación existente sin modificar Nginx')
+    modes.add_parser('update', help='Actualiza la instalación existente')
     args = parser.parse_args(argv)
     if args.mode == 'install' and not args.skip_nginx and not args.server_name:
         parser.error('install requiere --server-name, excepto con --skip-nginx')
@@ -362,7 +388,8 @@ def main(argv=None):
         try: pwd.getpwnam(args.user)
         except KeyError: fail(f'No existe el usuario Linux {args.user}.')
         if not SAFE_USER.fullmatch(args.nginx_group): fail('Grupo de Nginx inválido.')
-        values = {'APP_DIR': app_dir, 'APP_USER': args.user, 'SOCKET_PATH': socket_path, 'CONFIG_PATH': config_file, 'NGINX_GROUP': args.nginx_group}
+        rule = f'd {socket_path.parent} 0750 {args.user} {args.nginx_group} -' if not socket_path.parent.exists() else ''
+        values = {'APP_DIR': app_dir, 'APP_USER': args.user, 'SOCKET_PATH': socket_path, 'CONFIG_PATH': config_file, 'NGINX_GROUP': args.nginx_group, 'SOCKET_DIRECTORY_RULE': rule}
         supervisor_config = render('supervisor.conf.template', values)
         tmpfiles_config = render('tmpfiles.conf.template', values)
         nginx_config = ''
@@ -377,6 +404,7 @@ def main(argv=None):
         print(f'Configuraciones generadas en {output}', flush=True)
         if args.dry_run: return 0
     if os.geteuid() != 0: fail('Este modo requiere sudo.')
+    if not shutil.which('setfacl'): fail('Falta setfacl; instala el paquete acl: sudo apt install acl')
     for binary in ('runuser', 'supervisorctl', 'systemd-tmpfiles'):
         if not shutil.which(binary): fail(f'Falta {binary}; revisa deploy/README.md.')
     own_pid = check_program_identity()
@@ -391,14 +419,27 @@ def main(argv=None):
     try: grp.getgrnam(group)
     except KeyError: fail(f'No existe el grupo de Nginx {group}.')
     check_socket(socket_path,user,own_pid)
-    if args.mode == 'update' or args.skip_nginx: check_nginx_socket(socket_path)
+    nginx_update = plan_nginx_socket_update(socket_path) if args.mode == 'update' else None
+    if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path)
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
-    ensure_socket_directory(user,group,install=args.mode == 'install')
+    ensure_socket_directory(user,group,socket_path,install=args.mode == 'install')
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:
-        run(['supervisorctl', 'restart', PROGRAM])
-        run(['supervisorctl', 'status', PROGRAM])
+        if nginx_update:
+            original, updated = nginx_update
+            write_atomic(NGINX_FILE, updated)
+            try:
+                run(['nginx', '-t'])
+                run(['supervisorctl', 'restart', PROGRAM])
+                run(['supervisorctl', 'status', PROGRAM])
+            except BaseException:
+                write_atomic(NGINX_FILE, original)
+                raise
+            run(['systemctl', 'reload', 'nginx'])
+        else:
+            run(['supervisorctl', 'restart', PROGRAM])
+            run(['supervisorctl', 'status', PROGRAM])
     print('Flujo está en ejecución.')
     return 0
 

@@ -112,7 +112,9 @@ class DeploymentConfigTest(unittest.TestCase):
 
     def test_socket_path_and_conflicts(self):
         self.assertEqual(deploy.validate_socket_path('/run/flujo/app.sock'),Path('/run/flujo/app.sock'))
-        for path in ('/tmp/app.sock','/run/flujo/../other.sock','/run/flujo/not-socket'):
+        self.assertEqual(deploy.validate_socket_path('/tmp/app.sock'),Path('/tmp/app.sock'))
+        self.assertEqual(deploy.validate_socket_path('/run/otro/socket'),Path('/run/otro/socket'))
+        for path in ('/run/flujo/../other.sock','relativo.sock','/tmp/a:b'):
             with self.subTest(path=path),self.assertRaises(ValueError): deploy.validate_socket_path(path)
         with tempfile.TemporaryDirectory() as tmp:
             existing=Path(tmp)/'app.sock';existing.write_text('no borrar')
@@ -142,10 +144,10 @@ class DeploymentConfigTest(unittest.TestCase):
             user=deploy.pwd.getpwuid(os.getuid()).pw_name
             group=deploy.grp.getgrgid(os.getgid()).gr_name
             config.write_text('d /run/flujo 0750 otra otra -\n')
-            with patch.object(deploy,'TMPFILES_FILE',config),patch.object(deploy,'SOCKET_DIR',directory), \
+            with patch.object(deploy,'TMPFILES_FILE',config), \
                  patch.object(deploy,'run') as run:
-                with self.assertRaisesRegex(ValueError,'otra configuración'):
-                    deploy.ensure_socket_directory(user,group,install=True)
+                with self.assertRaises(ValueError):
+                    deploy.ensure_socket_directory(user,group,directory/'socket',install=True)
                 run.assert_not_called()
             self.assertEqual(config.read_text(),'d /run/flujo 0750 otra otra -\n')
 
@@ -185,7 +187,7 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy, 'check_program_identity', return_value=123), \
                  patch.object(deploy, 'installed_supervisor_settings', return_value=user), \
                  patch.object(deploy, 'check_socket') as socket_check, \
-                 patch.object(deploy, 'check_nginx_socket') as nginx_check, \
+                 patch.object(deploy, 'plan_nginx_socket_update', return_value=None) as nginx_check, \
                  patch.object(deploy, 'installed_socket_group', return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
                  patch.object(deploy, 'ensure_socket_directory') as socket_dir, \
                  patch.object(deploy, 'prepare_venv') as prepare, patch.object(deploy, 'run') as run:
@@ -220,14 +222,73 @@ class DeploymentConfigTest(unittest.TestCase):
 
     def test_install_dry_run_uses_ini_socket(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp).resolve();(root/'config.ini').write_text('[app]\nport=8123\ntimezone=UTC\ndatabase=tasks.db\n')
+            root=Path(tmp).resolve();(root/'config.ini').write_text('[app]\nport=8123\ntimezone=UTC\ndatabase=tasks.db\nsocket=/run/otra-app/custom.sock\n')
             user=deploy.pwd.getpwuid(os.getuid()).pw_name
             with patch.object(deploy,'APP_DIR',root):
                 self.assertEqual(deploy.main(['install','--server-name','tareas.example.com','--user',user,'--dry-run','--output-dir',str(root/'generated')]),0)
             nginx=(root/'generated/nginx.conf').read_text()
             supervisor=(root/'generated/supervisor.conf').read_text()
-            self.assertIn('proxy_pass http://unix:/run/flujo/flujo.sock;',nginx)
+            self.assertIn('proxy_pass http://unix:/run/otra-app/custom.sock;',nginx)
             self.assertIn(f'APP_CONFIG="{root}/config.ini"',supervisor)
+            self.assertIn('d /run/otra-app 0750 ',(root/'generated/tmpfiles.conf').read_text())
+
+    def test_nginx_socket_update_preserves_https_and_rejects_multiple_destinations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            site=Path(tmp)/'flujo-app'
+            original='server {\n ssl_certificate /etc/letsencrypt/cert.pem;\n proxy_pass http://unix:/run/flujo/old.sock:;\n}\n'
+            site.write_text(original)
+            with patch.object(deploy,'NGINX_FILE',site):
+                before,after=deploy.plan_nginx_socket_update('/run/custom/new.sock')
+                self.assertEqual(before,original)
+                self.assertIn('ssl_certificate /etc/letsencrypt/cert.pem;',after)
+                self.assertIn('proxy_pass http://unix:/run/custom/new.sock;',after)
+                site.write_text(original + 'proxy_pass http://127.0.0.1:9000;\n')
+                with self.assertRaisesRegex(ValueError,'varios destinos'):
+                    deploy.plan_nginx_socket_update('/run/custom/new.sock')
+
+    def test_shared_socket_directory_permissions_are_not_modified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'shared'; directory.mkdir(mode=0o755)
+            before=directory.stat().st_mode
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            with patch.object(deploy,'TMPFILES_FILE',config), patch.object(deploy,'as_user'), \
+                 patch.object(deploy.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())), \
+                 patch.object(deploy,'run') as run:
+                deploy.ensure_socket_directory(user,group,directory/'custom.sock',install=True)
+            self.assertEqual(directory.stat().st_mode,before)
+            self.assertNotIn('d '+str(directory),config.read_text())
+            run.assert_not_called()
+
+    def test_failed_directory_check_restores_previous_runtime_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'shared'; directory.mkdir()
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            original=f'd /run/flujo 0750 {user} {group} -\n'; config.write_text(original)
+            with patch.object(deploy,'TMPFILES_FILE',config), patch.object(deploy,'as_user',side_effect=subprocess.CalledProcessError(1,'test')):
+                with self.assertRaisesRegex(ValueError,'permisos'):
+                    deploy.ensure_socket_directory(user,group,directory/'custom.sock',install=False)
+            self.assertEqual(config.read_text(),original)
+
+    def test_update_changes_nginx_and_reloads_when_socket_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); site=root/'nginx.conf'
+            (root/'config.ini').write_text('[app]\ndatabase=tasks.db\ntimezone=UTC\nsocket=/run/custom/new.sock\n')
+            site.write_text('server {\n proxy_pass http://unix:/run/flujo/old.sock;\n}\n')
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            with patch.object(deploy,'APP_DIR',root), patch.object(deploy,'NGINX_FILE',site), \
+                 patch.object(deploy.os,'geteuid',return_value=0), patch.object(deploy.shutil,'which',return_value='/bin/fake'), \
+                 patch.object(deploy,'check_program_identity',return_value=123), \
+                 patch.object(deploy,'installed_supervisor_settings',return_value=user), \
+                 patch.object(deploy,'installed_socket_group',return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
+                 patch.object(deploy,'check_socket'), patch.object(deploy,'ensure_socket_directory'), \
+                 patch.object(deploy,'prepare_venv'), patch.object(deploy,'run') as run:
+                self.assertEqual(deploy.main(['update']),0)
+            self.assertIn('proxy_pass http://unix:/run/custom/new.sock;',site.read_text())
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ['nginx','-t'], ['supervisorctl','restart','flujo-app'],
+                ['supervisorctl','status','flujo-app'], ['systemctl','reload','nginx']])
 
 
 if __name__ == '__main__':
