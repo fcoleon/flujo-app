@@ -257,7 +257,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not u: return self.respond({'error':'Inicia sesión'},401)
                 if path=='/api/logout':
                     cookie=SimpleCookie(); cookie.load(self.headers.get('Cookie','')); c.execute('DELETE FROM sessions WHERE token=?',(cookie['session'].value if 'session' in cookie else '',)); return self.respond({'ok':True})
-                if path=='/api/users':
+                if path=='/api/profile':
+                    name=b.get('name')
+                    if not isinstance(name,str) or not name.strip() or len(name.strip())>120: raise ValueError('El nombre debe tener entre 1 y 120 caracteres')
+                    current=b.get('current_password',''); new=b.get('new_password',''); confirmation=b.get('confirm_password','')
+                    if not all(isinstance(value,str) for value in (current,new,confirmation)): raise ValueError('Contraseña inválida')
+                    if current or new or confirmation:
+                        if len(new)<8: raise ValueError('La nueva contraseña debe tener al menos 8 caracteres')
+                        if new!=confirmation: raise ValueError('Las contraseñas nuevas no coinciden')
+                        credentials=c.execute('SELECT password,salt FROM users WHERE id=?',(u['id'],)).fetchone()
+                        if not hmac.compare_digest(credentials['password'],hashpw(current,credentials['salt'])): raise ValueError('La contraseña actual es incorrecta')
+                        salt=secrets.token_hex(16)
+                        c.execute('UPDATE users SET password=?,salt=? WHERE id=?',(hashpw(new,salt),salt,u['id']))
+                    c.execute('UPDATE users SET name=? WHERE id=?',(name.strip(),u['id']))
+                elif path=='/api/users':
                     if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear usuarios')
                     name=b.get('name','').strip(); username=b.get('username','').strip().lower(); pw=b.get('password','')
                     if not name or not username or len(pw)<8: raise ValueError('Completa los campos; la contraseña debe tener al menos 8 caracteres')

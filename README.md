@@ -46,6 +46,8 @@ python -m unittest discover -s tests -v
 
 Los usuarios pertenecen al workspace. Un administrador general crea usuarios y proyectos, y tiene permisos de administrador en todos ellos. Cada proyecto puede otorgar a otros usuarios el rol de administrador, editor o solo lectura. El acceso y los datos del tablero se administran desde el icono de configuración junto a su nombre.
 
+Cada persona puede editar su nombre y cambiar su contraseña desde «Mi perfil». Para cambiar la contraseña debe ingresar la actual y confirmar la nueva.
+
 Una tarea con proyectos es accesible a quien tenga acceso a alguno de ellos. Una tarea sin proyecto está disponible en «Sin proyecto» para los administradores y la persona responsable, que puede editarla. Una subtarea sin proyecto también hereda el acceso de su tarea principal.
 
 El tipo base de cada proyecto tiene un estado en curso y otro finalizado. Los tipos personalizados permiten agregar estados, modificar su nombre y color, y ordenarlos. Debe existir al menos un estado en curso y uno finalizado. Se pueden eliminar tipos y estados personalizados cuando ninguna tarea los utiliza, incluidas tareas de otros proyectos o sin proyecto. El tipo base conserva sus dos estados. Las tareas con el tipo base general adoptan el tipo base equivalente al incorporarse a un proyecto, manteniendo su categoría de finalización.

@@ -106,6 +106,33 @@ class TaskTypesTest(unittest.TestCase):
         with app.db() as c:
             self.assertIsNotNone(c.execute('SELECT 1 FROM history WHERE task_id=? AND message=?',(task,'eliminó la subtarea Subtarea')).fetchone())
 
+    def test_edit_own_profile_and_password(self):
+        salt='ab'*16
+        with app.db() as c:
+            c.execute('UPDATE users SET salt=?,password=? WHERE id=3',(salt,app.hashpw('anterior123',salt)))
+        self.assertEqual(self.post('profile',{'id':1,'name':'  Nuevo nombre  '},user=3)[0],200)
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT name FROM users WHERE id=3').fetchone()['name'],'Nuevo nombre')
+            self.assertEqual(c.execute('SELECT name FROM users WHERE id=1').fetchone()['name'],'Admin')
+        for fields in (
+            {'name':' '},
+            {'name':'No guardar','current_password':'incorrecta','new_password':'nueva1234','confirm_password':'nueva1234'},
+            {'name':'No guardar','current_password':'anterior123','new_password':'corta','confirm_password':'corta'},
+            {'name':'No guardar','current_password':'anterior123','new_password':'nueva1234','confirm_password':'distinta'},
+        ):
+            self.assertEqual(self.post('profile',fields,user=3)[0],400)
+        with app.db() as c:
+            row=c.execute('SELECT * FROM users WHERE id=3').fetchone()
+            self.assertEqual(row['name'],'Nuevo nombre')
+            self.assertEqual(row['password'],app.hashpw('anterior123',row['salt']))
+        self.assertEqual(self.post('profile',{'name':'Nombre final','current_password':'anterior123','new_password':'nueva1234','confirm_password':'nueva1234'},user=3)[0],200)
+        with app.db() as c:
+            row=c.execute('SELECT * FROM users WHERE id=3').fetchone()
+            self.assertEqual(row['name'],'Nombre final')
+            self.assertNotEqual(row['salt'],salt)
+            self.assertEqual(row['password'],app.hashpw('nueva1234',row['salt']))
+            self.assertNotEqual(row['password'],app.hashpw('anterior123',row['salt']))
+
     def test_delete_type_rejects_in_use_and_preserves_metrics(self):
         typ=self.post('task-types',{'project_id':1,'name':'Personalizado'})[1]['id']
         base=None
