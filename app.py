@@ -1,4 +1,4 @@
-import hashlib, hmac, json, os, secrets, sqlite3, re, uuid
+import hashlib, hmac, json, os, secrets, sqlite3, re, uuid, subprocess
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from statistics import median
@@ -8,12 +8,25 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from urllib.parse import urlparse, parse_qs
 from html.parser import HTMLParser
 from html import escape
+from pathlib import Path
 from settings import load_settings
 
 SETTINGS = load_settings()
 DB = SETTINGS['database']
 PORT = SETTINGS['port']
 STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
+
+def running_version():
+    try:
+        result=subprocess.run(['git','rev-parse','--short=8','--verify','HEAD'],cwd=Path(__file__).resolve().parent,
+                              capture_output=True,text=True,check=True,timeout=2)
+        value=result.stdout.strip()
+        return value if re.fullmatch(r'[0-9a-f]{8,64}',value) else None
+    except (OSError,subprocess.SubprocessError):
+        return None
+
+# Se fija al arrancar para identificar el código cargado por este proceso.
+VERSION = running_version()
 
 def db():
     c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
@@ -253,7 +266,7 @@ def api_get():
                     if can_task(c,u,t['id']):
                         projects_for_task=task_projects(c,t['id']); explicit={r['project_id'] for r in c.execute('SELECT project_id FROM placements WHERE task_id=?',(t['id'],))}
                         d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None; tasks.append(d)
-                return respond({'user':dict(u),'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
+                return respond({'user':dict(u),'version':VERSION,'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
             if path=='/api/analytics':
                 params=request.args.to_dict(flat=False); p=int(params['project_id'][0]); month=params['month'][0]
                 if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)

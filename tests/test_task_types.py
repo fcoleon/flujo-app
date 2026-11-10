@@ -2,6 +2,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -449,6 +450,17 @@ class TaskTypesTest(unittest.TestCase):
         self.assertEqual(too_large.status_code,413)
         self.assertEqual(client.post('/api/logout',json={},base_url='https://localhost').status_code,200)
         self.assertEqual(client.get('/api/data',base_url='https://localhost').status_code,401)
+
+    def test_version_is_short_commit_and_unavailable_without_git(self):
+        with patch('app.subprocess.run',return_value=subprocess.CompletedProcess([],0,'a1b2c3d4\n','')) as command:
+            self.assertEqual(app.running_version(),'a1b2c3d4')
+            self.assertIn('--short=8',command.call_args.args[0])
+        with patch('app.subprocess.run',side_effect=FileNotFoundError):
+            self.assertIsNone(app.running_version())
+        with patch('app.subprocess.run',return_value=subprocess.CompletedProcess([],0,'no es un hash\n','')):
+            self.assertIsNone(app.running_version())
+        status,data=self.get('data',1)
+        self.assertEqual(status,200);self.assertEqual(data['version'],app.VERSION)
 
     def test_temporary_password_requires_change_before_workspace_access(self):
         self.assertEqual(self.post('users',{'name':'Invitado','username':'invitado','password':'temporal123'})[0],200)
