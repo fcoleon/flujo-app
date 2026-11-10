@@ -196,9 +196,11 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy, 'installed_supervisor_settings', return_value=user), \
                  patch.object(deploy, 'check_socket') as socket_check, \
                  patch.object(deploy, 'plan_nginx_socket_update', return_value=None) as nginx_check, \
+                 patch.object(deploy, 'plan_nginx_static_update', return_value=None), \
                  patch.object(deploy, 'installed_socket_group', return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
                  patch.object(deploy, 'ensure_socket_directory') as socket_dir, \
-                 patch.object(deploy, 'prepare_venv') as prepare, patch.object(deploy, 'run') as run:
+                 patch.object(deploy, 'prepare_venv') as prepare, patch.object(deploy, 'publish_static_assets'), \
+                 patch.object(deploy, 'install_nginx_static_snippet'), patch.object(deploy, 'run') as run:
                 self.assertEqual(deploy.main(['update']),0)
             socket_check.assert_called_once_with(Path('/run/flujo/flujo.sock'),user,123)
             nginx_check.assert_called_once_with(Path('/run/flujo/flujo.sock'))
@@ -239,6 +241,10 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertIn('proxy_pass http://unix:/run/otra-app/custom.sock;',nginx)
             self.assertIn(f'APP_CONFIG="{root}/config.ini"',supervisor)
             self.assertIn('d /run/otra-app 0750 ',(root/'generated/tmpfiles.conf').read_text())
+            self.assertIn('include /etc/nginx/snippets/flujo-app-static.conf;',nginx)
+            static=(root/'generated/nginx-static.conf').read_text()
+            self.assertIn('root /var/lib/flujo-app;',static)
+            self.assertIn('immutable',static)
 
     def test_nginx_socket_update_preserves_https_and_rejects_multiple_destinations(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -308,7 +314,7 @@ class DeploymentConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve(); site=root/'nginx.conf'
             (root/'config.ini').write_text('[app]\ndatabase=tasks.db\ntimezone=UTC\nsocket=/run/custom/new.sock\n')
-            site.write_text('server {\n proxy_pass http://unix:/run/flujo/old.sock;\n}\n')
+            site.write_text('server {\n location / {\n proxy_pass http://unix:/run/flujo/old.sock;\n }\n}\n')
             user=deploy.pwd.getpwuid(os.getuid()).pw_name
             with patch.object(deploy,'APP_DIR',root), patch.object(deploy,'NGINX_FILE',site), \
                  patch.object(deploy.os,'geteuid',return_value=0), patch.object(deploy.shutil,'which',return_value='/bin/fake'), \
@@ -316,12 +322,41 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy,'installed_supervisor_settings',return_value=user), \
                  patch.object(deploy,'installed_socket_group',return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
                  patch.object(deploy,'check_socket'), patch.object(deploy,'ensure_socket_directory'), \
-                 patch.object(deploy,'prepare_venv'), patch.object(deploy,'run') as run:
+                 patch.object(deploy,'prepare_venv'), patch.object(deploy,'publish_static_assets'), \
+                 patch.object(deploy,'install_nginx_static_snippet'), patch.object(deploy,'run') as run:
                 self.assertEqual(deploy.main(['update']),0)
             self.assertIn('proxy_pass http://unix:/run/custom/new.sock;',site.read_text())
+            self.assertIn('include /etc/nginx/snippets/flujo-app-static.conf;',site.read_text())
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['nginx','-t'], ['supervisorctl','restart','flujo-app'],
                 ['supervisorctl','status','flujo-app'], ['systemctl','reload','nginx']])
+
+    def test_static_assets_preserve_old_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'source'; source.mkdir(); (source/'static').mkdir()
+            for name in ('style.css','app.js','favicon.svg'): (source/'static'/name).write_text(name)
+            with patch.object(deploy,'APP_DIR',source), patch.object(deploy,'PUBLIC_DIR',root/'public'/'assets'):
+                deploy.publish_static_assets()
+                first={p.name:p.read_bytes() for p in (root/'public'/'assets').iterdir()}
+                (source/'static'/'style.css').write_text('estilo actualizado')
+                deploy.publish_static_assets()
+                second={p.name:p.read_bytes() for p in (root/'public'/'assets').iterdir()}
+            self.assertEqual(len(first),3);self.assertEqual(len(second),4)
+            self.assertTrue(first.items() <= second.items())
+            self.assertEqual((root/'public'/'assets').stat().st_mode & 0o777,0o755)
+
+    def test_static_nginx_migration_keeps_ssl_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            site=Path(tmp)/'site'
+            original='server {\n ssl_certificate /etc/letsencrypt/live/test.pem;\n location / {\n  proxy_pass http://unix:/run/flujo/app.sock;\n }\n}\n'
+            site.write_text(original)
+            with patch.object(deploy,'NGINX_FILE',site):
+                before,after=deploy.plan_nginx_static_update(None)
+                self.assertEqual(before,original)
+                self.assertIn('ssl_certificate /etc/letsencrypt/live/test.pem;',after)
+                self.assertIn('include /etc/nginx/snippets/flujo-app-static.conf;',after)
+                site.write_text(after)
+                self.assertIsNone(deploy.plan_nginx_static_update(None))
 
 
 if __name__ == '__main__':

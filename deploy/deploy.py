@@ -3,6 +3,7 @@
 import argparse
 import configparser
 import errno
+import hashlib
 import grp
 import ipaddress
 import os
@@ -25,6 +26,8 @@ SUPERVISOR_FILE = Path('/etc/supervisor/conf.d/flujo-app.conf')
 NGINX_FILE = Path('/etc/nginx/sites-available/flujo-app')
 NGINX_LINK = Path('/etc/nginx/sites-enabled/flujo-app')
 TMPFILES_FILE = Path('/etc/tmpfiles.d/flujo-app.conf')
+NGINX_STATIC_FILE = Path('/etc/nginx/snippets/flujo-app-static.conf')
+PUBLIC_DIR = Path('/var/lib/flujo-app/assets')
 SAFE_PATH = re.compile(r'^/[A-Za-z0-9_./+@-]+$')
 SAFE_USER = re.compile(r'^[a-z_][a-z0-9_-]*[$]?$')
 
@@ -212,9 +215,9 @@ def installed_socket_group(user):
 
 
 def prepare_venv(user, db_path, timezone, create=True):
-    if not (APP_DIR / 'app.py').is_file() or not (APP_DIR / 'settings.py').is_file() or not (APP_DIR / 'static' / 'index.html').is_file():
+    if not (APP_DIR / 'app.py').is_file() or not (APP_DIR / 'settings.py').is_file() or not (APP_DIR / 'templates' / 'index.html').is_file():
         fail(f'No se encontró la aplicación completa en {APP_DIR}. Copia sus archivos antes de continuar.')
-    for path in (APP_DIR, APP_DIR / 'app.py', APP_DIR / 'settings.py', APP_DIR / 'config.ini', APP_DIR / 'static' / 'index.html'):
+    for path in (APP_DIR, APP_DIR / 'app.py', APP_DIR / 'settings.py', APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'style.css', 'favicon.svg'))):
         try:
             as_user(user, 'test', '-x' if path.is_dir() else '-r', path)
         except subprocess.CalledProcessError:
@@ -314,6 +317,61 @@ def write_atomic(path, content):
         raise
 
 
+def publish_static_assets():
+    # Solo se publica el contenido público; Nginx no necesita acceso al proyecto.
+    for directory in (PUBLIC_DIR.parent, PUBLIC_DIR):
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            fail(f'La ruta pública no es un directorio normal: {directory}')
+        if not directory.exists():
+            directory.mkdir(mode=0o755)
+            directory.chmod(0o755)
+        info=directory.stat()
+        if info.st_uid!=os.geteuid() or info.st_mode & 0o005 != 0o005 or info.st_mode & 0o022:
+            fail(f'Revisa el dueño y los permisos del directorio público {directory}.')
+    for name in ('style.css','app.js','favicon.svg'):
+        content=(APP_DIR/'static'/name).read_bytes()
+        version=hashlib.sha256(content).hexdigest()[:16]
+        stem,extension=name.rsplit('.',1)
+        destination=PUBLIC_DIR/f'{stem}.{version}.{extension}'
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            fail(f'El archivo público no es un archivo regular: {destination}')
+        if destination.exists():
+            if destination.stat().st_uid!=os.geteuid() or destination.read_bytes()!=content:
+                fail(f'El archivo público existente no coincide: {destination}')
+        else:
+            write_atomic(destination,content.decode('utf-8'))
+        destination.chmod(0o644)
+
+
+def install_nginx_static_snippet():
+    if not NGINX_STATIC_FILE.parent.is_dir():
+        fail(f'No existe el directorio de Nginx {NGINX_STATIC_FILE.parent}.')
+    content=render('nginx-static.conf.template',{})
+    if NGINX_STATIC_FILE.is_symlink() or (NGINX_STATIC_FILE.exists() and not NGINX_STATIC_FILE.is_file()):
+        fail(f'La configuración estática de Nginx no es un archivo regular: {NGINX_STATIC_FILE}')
+    if NGINX_STATIC_FILE.exists():
+        if NGINX_STATIC_FILE.read_text(encoding='utf-8')!=content:
+            fail(f'{NGINX_STATIC_FILE} ya existe con otro contenido; revísalo antes de continuar.')
+    else:
+        write_atomic(NGINX_STATIC_FILE,content)
+
+
+def plan_nginx_static_update(change):
+    if not NGINX_FILE.is_file():
+        print('Aviso: configura Nginx para servir los archivos de /assets/; consulta deploy/README.md.', flush=True)
+        return change
+    original,updated=change if change else (NGINX_FILE.read_text(encoding='utf-8'),NGINX_FILE.read_text(encoding='utf-8'))
+    include=f'include {NGINX_STATIC_FILE};'
+    pattern=re.compile(r'(?m)^(?P<indent>[ \t]*)location[ \t]+/[ \t]*\{(?P<body>[^{}]*)\}')
+    matches=[m for m in pattern.finditer(updated) if re.search(r'\bproxy_pass\s+',m.group('body'))]
+    count=len(re.findall(r'(?m)^[ \t]*'+re.escape(include)+r'[ \t]*(?:#.*)?$',updated))
+    if not matches or count not in (0,len(matches)):
+        fail('No se pudo actualizar automáticamente Nginx para archivos estáticos; consulta deploy/README.md.')
+    if count==0:
+        updated=pattern.sub(lambda m: m.group('indent')+include+'\n'+m.group(0) if re.search(r'\bproxy_pass\s+',m.group('body')) else m.group(0),updated)
+    return (original,updated) if updated!=original else None
+
+
 def apply_config(supervisor_config, nginx_config, skip_nginx):
     if os.geteuid() != 0:
         fail('Para instalar la configuración usa sudo.')
@@ -404,7 +462,9 @@ def main(argv=None):
         output.mkdir(parents=True, exist_ok=True)
         write_atomic(output / 'supervisor.conf', supervisor_config)
         write_atomic(output / 'tmpfiles.conf', tmpfiles_config)
-        if not args.skip_nginx: write_atomic(output / 'nginx.conf', nginx_config)
+        if not args.skip_nginx:
+            write_atomic(output / 'nginx.conf', nginx_config)
+            write_atomic(output / 'nginx-static.conf',render('nginx-static.conf.template',{}))
         print(f'Configuraciones generadas en {output}', flush=True)
         if args.dry_run: return 0
     if os.geteuid() != 0: fail('Este modo requiere sudo.')
@@ -423,9 +483,13 @@ def main(argv=None):
     except KeyError: fail(f'No existe el grupo de Nginx {group}.')
     check_socket(socket_path,user,own_pid)
     nginx_update = plan_nginx_socket_update(socket_path) if args.mode == 'update' else None
+    if args.mode == 'update': nginx_update = plan_nginx_static_update(nginx_update)
     if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path)
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
     ensure_socket_directory(user,group,socket_path,install=args.mode == 'install')
+    publish_static_assets()
+    if (args.mode == 'install' and not args.skip_nginx) or (args.mode == 'update' and NGINX_FILE.is_file()):
+        install_nginx_static_snippet()
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:

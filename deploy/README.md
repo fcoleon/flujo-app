@@ -1,6 +1,6 @@
 # Despliegue en Ubuntu EC2
 
-Flujo usa Flask en desarrollo y Gunicorn detrás de Nginx en producción. Supervisor mantiene Gunicorn en ejecución; la comunicación con Nginx usa un socket Unix, sin reservar un puerto TCP para la aplicación.
+Flujo usa Flask en desarrollo y Gunicorn detrás de Nginx en producción. Supervisor mantiene Gunicorn en ejecución; la comunicación con Nginx usa un socket Unix, sin reservar un puerto TCP para la aplicación. Nginx entrega directamente CSS, JavaScript y favicon desde `/var/lib/flujo-app/assets`, sin acceder al directorio del proyecto; Flask entrega el HTML y la API.
 
 La aplicación debe estar en su ruta definitiva. Se requiere Python 3.9 o superior, `python3-venv`, `tzdata`, Nginx, Supervisor, `systemd-tmpfiles` e `iproute2`. Nginx y Supervisor deben estar en ejecución. El usuario de la aplicación necesita acceso de lectura al proyecto y de escritura a la base de datos y su directorio.
 
@@ -40,6 +40,14 @@ Se comparte el Nginx existente; no se reemplazan otros sitios ni se actualizan o
 proxy_pass http://unix:/run/flujo/flujo.sock;
 ```
 
+Para que ese Nginx sirva también los estáticos, copia `deploy/nginx-static.conf.template` a `/etc/nginx/snippets/flujo-app-static.conf` y agrega dentro del bloque `server` que atiende la aplicación:
+
+```nginx
+include /etc/nginx/snippets/flujo-app-static.conf;
+```
+
+Después ejecuta `sudo nginx -t && sudo systemctl reload nginx`. Mientras no se incluya, Flask seguirá entregando los archivos como alternativa.
+
 La configuración inicial de Nginx usa HTTP. Restringe el acceso en el security group, crea la primera cuenta administradora y configura HTTPS antes de usar contraseñas desde la red. Con Certbot instalado:
 
 ```sh
@@ -62,7 +70,7 @@ Después de copiar el código nuevo, conservando `config.ini`, `.venv` y la base
 sudo python3 deploy/deploy.py update
 ```
 
-Actualiza las dependencias y reinicia solo Flujo. Si cambias el socket, también actualiza el `proxy_pass` del sitio de Flujo, valida Nginx y lo recarga, conservando el resto de la configuración y los certificados. Si el sitio tiene varios destinos o una configuración personalizada, el script pedirá actualizar el destino manualmente. El cambio de socket puede provocar una interrupción breve.
+Actualiza las dependencias, publica los archivos estáticos y reinicia Flujo. Los archivos llevan un identificador basado en su contenido y las versiones anteriores se conservan para las páginas que aún las usan. En la primera actualización de una instalación anterior, el script agrega la configuración de estáticos al sitio de Flujo y recarga Nginx. Si cambias el socket, también actualiza el `proxy_pass`. Conserva el resto de la configuración y los certificados; si el sitio tiene una configuración personalizada que no puede actualizar, pedirá ajustarla manualmente. El cambio de socket puede provocar una interrupción breve.
 
 ## Migrar una instalación anterior por TCP
 

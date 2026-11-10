@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from statistics import median
 from contextlib import closing
-from flask import Flask, jsonify, make_response, request, send_from_directory, abort
+from flask import Flask, jsonify, make_response, request, send_from_directory, abort, render_template_string
 from werkzeug.middleware.proxy_fix import ProxyFix
 from urllib.parse import urlparse, parse_qs
 from html.parser import HTMLParser
@@ -15,6 +15,9 @@ SETTINGS = load_settings()
 DB = SETTINGS['database']
 PORT = SETTINGS['port']
 STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
+STATIC_DIR = Path(__file__).resolve().parent / 'static'
+TEMPLATE_DIR = Path(__file__).resolve().parent / 'templates'
+PUBLIC_ASSET_DIR = Path('/var/lib/flujo-app/assets')
 
 def running_version():
     try:
@@ -228,10 +231,44 @@ def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
 @app.get('/t/<public_id>')
 def index(public_id=None):
     if public_id is not None and not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',public_id): abort(404)
-    return send_from_directory('static','index.html')
+    html=(TEMPLATE_DIR/'index.html').read_text(encoding='utf-8')
+    response=make_response(render_template_string(html,style_version=asset_version('style.css'),
+                           script_version=asset_version('app.js'),favicon_version=asset_version('favicon.svg')))
+    response.cache_control.no_cache=True
+    return response
+
+def content_version(filename):
+    return hashlib.sha256((STATIC_DIR/filename).read_bytes()).hexdigest()[:16]
+
+PRODUCTION_ASSET_VERSIONS = ({name:content_version(name) for name in ('style.css','app.js','favicon.svg')}
+                             if os.environ.get('FLUJO_BEHIND_PROXY')=='1' else None)
+
+def asset_version(filename):
+    return PRODUCTION_ASSET_VERSIONS[filename] if PRODUCTION_ASSET_VERSIONS is not None else content_version(filename)
+
+@app.get('/assets/<filename>')
+def versioned_asset(filename):
+    match=re.fullmatch(r'(style|app|favicon)\.([0-9a-f]{16})\.(css|js|svg)',filename)
+    if not match: abort(404)
+    name,version,extension=match.groups()
+    source=f'{name}.{extension}'
+    if source not in ('style.css','app.js','favicon.svg'): abort(404)
+    if PRODUCTION_ASSET_VERSIONS is not None:
+        response=send_from_directory(PUBLIC_ASSET_DIR,filename)
+    else:
+        if version!=asset_version(source): abort(404)
+        response=send_from_directory(STATIC_DIR,source)
+    response.cache_control.clear()
+    response.cache_control.public=True
+    response.cache_control.max_age=31536000
+    response.cache_control.immutable=True
+    return response
 
 @app.get('/<any(app.js,style.css,favicon.svg):filename>')
-def static_asset(filename): return send_from_directory('static',filename)
+def static_asset(filename):
+    response=send_from_directory(STATIC_DIR,filename)
+    response.cache_control.no_cache=True
+    return response
 
 @app.route('/api/<path:route>',methods=['GET','POST'])
 def api_dispatch(route):

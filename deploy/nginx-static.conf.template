@@ -1,0 +1,6 @@
+location ~ "^/assets/(style\.[0-9a-f]{16}\.css|app\.[0-9a-f]{16}\.js|favicon\.[0-9a-f]{16}\.svg)$" {
+    root /var/lib/flujo-app;
+    try_files $uri =404;
+    add_header Cache-Control "public, max-age=31536000, immutable";
+    access_log off;
+}

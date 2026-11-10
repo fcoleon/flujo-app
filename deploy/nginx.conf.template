@@ -2,6 +2,8 @@ server {
     listen 80;
     server_name @@SERVER_NAME@@;
 
+    include /etc/nginx/snippets/flujo-app-static.conf;
+
     # La aplicación escucha en un socket Unix local, accesible para Nginx.
     location / {
         proxy_pass http://unix:@@SOCKET_PATH@@;
