@@ -507,6 +507,18 @@ class TaskTypesTest(unittest.TestCase):
                 self.assertTrue(session['user']['admin']);self.assertFalse(session['must_change_password'])
             finally: app.DB=old
 
+    def test_simultaneous_temporary_password_changes_only_one_session_succeeds(self):
+        self.assertEqual(self.post('users',{'name':'Invitado','username':'invitado','password':'temporal123'})[0],200)
+        clients=[app.app.test_client(),app.app.test_client()]
+        for client in clients:
+            self.assertEqual(client.post('/api/login',json={'username':'invitado','password':'temporal123'}).status_code,200)
+        barrier=Barrier(2)
+        def change(index):
+            barrier.wait();password='nuevaclave'+str(index)
+            return clients[index].post('/api/password/change',json={'current_password':'temporal123','new_password':password,'confirm_password':password}).status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            self.assertEqual(sorted(pool.map(change,range(2))),[200,401])
+
     def test_first_account_creation_is_serialized_between_requests(self):
         old=app.DB
         with tempfile.TemporaryDirectory() as temp:

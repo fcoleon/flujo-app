@@ -19,9 +19,12 @@ database = tasks.db
 timezone = America/Santiago
 port = 8000
 socket = /run/flujo/flujo.sock
+allow_self_registration = false
 ```
 
 `database` puede ser absoluta o relativa a la raíz. `port` se usa solo al ejecutar `python app.py` en desarrollo; en producción Gunicorn utiliza `socket`. El socket debe estar dentro de `/run/flujo` y su nombre terminar en `.sock`. Conserva `config.ini`, `.venv` y la base de datos al copiar actualizaciones.
+
+Con `allow_self_registration = false` solo se puede crear la primera cuenta o agregar usuarios desde una cuenta administradora. Si se cambia a `true`, cualquiera que pueda acceder a la aplicación podrá registrarse; reinicia Flujo para aplicar el cambio.
 
 ## Primera instalación
 
