@@ -32,6 +32,8 @@ def init():
         CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);''')
         if 'blocked' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
             c.execute('ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0')
+        if 'must_change_password' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
+            c.execute('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0')
         c.executescript('''CREATE TABLE IF NOT EXISTS task_types(id INTEGER PRIMARY KEY, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, is_base INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS task_statuses(id INTEGER PRIMARY KEY, type_id INTEGER NOT NULL REFERENCES task_types(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, is_done INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL);''')
         cols={r['name'] for r in c.execute('PRAGMA table_info(tasks)')}
@@ -201,6 +203,11 @@ def respond(data,status=200): return jsonify(data),status
 def current_user(c):
     return c.execute('SELECT u.id,u.name,u.username,u.admin FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=?',(request.cookies.get('session',''),)).fetchone()
 
+def session_response(token):
+    response=make_response(jsonify({'ok':True}))
+    response.set_cookie('session',token,httponly=True,samesite='Strict',secure=request.is_secure,path='/')
+    return response
+
 @app.errorhandler(413)
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
 
@@ -222,10 +229,12 @@ def api_get():
     try:
         with closing(db()) as c, c:
             u=current_user(c)
-            blocked=bool(u and c.execute('SELECT blocked FROM users WHERE id=?',(u['id'],)).fetchone()['blocked'])
-            if path=='/api/session': return respond({'user':dict(u) if u else None,'blocked':blocked,'needs_setup':not bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone())})
+            flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone() if u else None
+            blocked=bool(flags and flags['blocked']);must_change=bool(flags and flags['must_change_password'])
+            if path=='/api/session': return respond({'user':dict(u) if u else None,'blocked':blocked,'must_change_password':must_change,'allow_self_registration':SETTINGS['allow_self_registration'],'needs_setup':not bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone())})
             if not u: return respond({'error':'Inicia sesión'},401)
             if blocked: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
+            if must_change: return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
             if path=='/api/data':
                 projects=[]
                 for p in c.execute('SELECT * FROM projects ORDER BY id').fetchall():
@@ -270,23 +279,45 @@ def api_post():
         if not isinstance(b,dict): raise ValueError('Datos inválidos')
         with closing(db()) as c, c:
             u=current_user(c)
-            if path in ('/api/login','/api/setup'):
-                if path=='/api/setup':
+            if path in ('/api/login','/api/setup','/api/register'):
+                if path=='/api/register' and not SETTINGS['allow_self_registration']:
+                    return respond({'error':'El registro está deshabilitado'},403)
+                if path in ('/api/setup','/api/register'):
                     # Serializa la creación de la primera cuenta entre workers.
                     c.execute('BEGIN IMMEDIATE')
-                    if c.execute('SELECT 1 FROM users').fetchone(): raise ValueError('La aplicación ya está configurada')
+                    exists=bool(c.execute('SELECT 1 FROM users').fetchone())
+                    if path=='/api/setup' and exists: raise ValueError('La aplicación ya está configurada')
+                    if path=='/api/register' and not exists: raise ValueError('Primero se debe crear la cuenta administradora')
                     name=b.get('name','').strip(); username=b.get('username','').strip().lower(); pw=b.get('password','')
                     if not name or not username or len(pw)<8: raise ValueError('Completa los campos; la contraseña debe tener al menos 8 caracteres')
-                    s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin) VALUES(?,?,?,?,1)',(name,username,hashpw(pw,s),s))
+                    s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin) VALUES(?,?,?,?,?)',(name,username,hashpw(pw,s),s,int(path=='/api/setup')))
                 row=c.execute('SELECT * FROM users WHERE username=?',(b.get('username','').strip().lower(),)).fetchone()
                 if not row or not hmac.compare_digest(row['password'],hashpw(b.get('password',''),row['salt'])): return respond({'error':'Usuario o contraseña incorrectos'},401)
                 token=secrets.token_urlsafe(32); c.execute('INSERT INTO sessions VALUES(?,?)',(token,row['id'])); c.commit()
-                response=make_response(jsonify({'ok':True})); response.set_cookie('session',token,httponly=True,samesite='Strict',secure=request.is_secure,path='/'); return response
+                return session_response(token)
             if not u: return respond({'error':'Inicia sesión'},401)
             if path=='/api/logout':
                 c.execute('DELETE FROM sessions WHERE token=?',(request.cookies.get('session',''),)); response=make_response(jsonify({'ok':True})); response.delete_cookie('session',path='/'); return response
-            if c.execute('SELECT blocked FROM users WHERE id=?',(u['id'],)).fetchone()['blocked']:
+            flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
+            if flags['blocked']:
                 return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
+            if path=='/api/password/change':
+                c.execute('BEGIN IMMEDIATE')
+                u=current_user(c)
+                if not u: return respond({'error':'Inicia sesión'},401)
+                credentials=c.execute('SELECT password,salt,blocked FROM users WHERE id=?',(u['id'],)).fetchone()
+                if credentials['blocked']: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
+                current=b.get('current_password','');new=b.get('new_password','');confirmation=b.get('confirm_password','')
+                if not all(isinstance(value,str) for value in (current,new,confirmation)): raise ValueError('Contraseña inválida')
+                if len(new)<8: raise ValueError('La nueva contraseña debe tener al menos 8 caracteres')
+                if new!=confirmation: raise ValueError('Las contraseñas nuevas no coinciden')
+                if not hmac.compare_digest(credentials['password'],hashpw(current,credentials['salt'])): raise ValueError('La contraseña actual es incorrecta')
+                if hmac.compare_digest(credentials['password'],hashpw(new,credentials['salt'])): raise ValueError('La nueva contraseña debe ser distinta de la actual')
+                salt=secrets.token_hex(16);c.execute('UPDATE users SET password=?,salt=?,must_change_password=0 WHERE id=?',(hashpw(new,salt),salt,u['id']))
+                c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],));token=secrets.token_urlsafe(32);c.execute('INSERT INTO sessions VALUES(?,?)',(token,u['id']));c.commit()
+                return session_response(token)
+            if flags['must_change_password']:
+                return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
             if path=='/api/workspace/update':
                 if not u['admin']: raise PermissionError('Solo un administrador del workspace puede cambiar el nombre')
                 name=b.get('name')
@@ -316,7 +347,7 @@ def api_post():
                 if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear usuarios')
                 name=b.get('name','').strip(); username=b.get('username','').strip().lower(); pw=b.get('password','')
                 if not name or not username or len(pw)<8: raise ValueError('Completa los campos; la contraseña debe tener al menos 8 caracteres')
-                s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin) VALUES(?,?,?,?,?)',(name,username,hashpw(pw,s),s,int(bool(b.get('admin')))))
+                s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin,must_change_password) VALUES(?,?,?,?,?,1)',(name,username,hashpw(pw,s),s,int(bool(b.get('admin')))))
             elif path=='/api/projects':
                 if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear proyectos')
                 name=b.get('name','').strip()

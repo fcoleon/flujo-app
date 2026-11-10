@@ -23,6 +23,10 @@ def load_settings(config_path=None, environ=None):
               'timezone': parser.get('app', 'timezone', fallback='America/Santiago'),
               'port': parser.get('app', 'port', fallback='8000'),
               'socket': parser.get('app', 'socket', fallback='/run/flujo/flujo.sock')}
+    try:
+        allow_self_registration = parser.getboolean('app', 'allow_self_registration', fallback=False)
+    except ValueError:
+        raise ValueError('allow_self_registration debe ser true o false') from None
     if env.get('FLUJO_CONFIG_ONLY') != '1':
         for key, var in (('database', 'TASKS_DB'), ('timezone', 'TASKS_TIMEZONE'), ('port', 'PORT')):
             if var in env: values[key] = env[var]
@@ -41,4 +45,4 @@ def load_settings(config_path=None, environ=None):
     socket_path = Path(values['socket'])
     if not socket_path.is_absolute() or not values['socket'].strip():
         raise ValueError('La ruta del socket debe ser absoluta')
-    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'socket': str(socket_path), 'config_path': str(path)}
+    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'socket': str(socket_path), 'allow_self_registration': allow_self_registration, 'config_path': str(path)}

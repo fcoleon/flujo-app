@@ -450,6 +450,63 @@ class TaskTypesTest(unittest.TestCase):
         self.assertEqual(client.post('/api/logout',json={},base_url='https://localhost').status_code,200)
         self.assertEqual(client.get('/api/data',base_url='https://localhost').status_code,401)
 
+    def test_temporary_password_requires_change_before_workspace_access(self):
+        self.assertEqual(self.post('users',{'name':'Invitado','username':'invitado','password':'temporal123'})[0],200)
+        with app.db() as c:
+            invited=c.execute("SELECT id,must_change_password FROM users WHERE username='invitado'").fetchone()
+            self.assertEqual(invited['must_change_password'],1)
+        self.assertEqual(self.post('workspace/block',{'user_id':invited['id'],'blocked':True})[0],200)
+        blocked=app.app.test_client();blocked.post('/api/login',json={'username':'invitado','password':'temporal123'})
+        self.assertTrue(blocked.get('/api/session').get_json()['blocked'])
+        self.assertTrue(blocked.post('/api/password/change',json={}).get_json()['blocked'])
+        self.assertEqual(self.post('workspace/block',{'user_id':invited['id'],'blocked':False})[0],200)
+        first=app.app.test_client();second=app.app.test_client()
+        for client in (first,second):
+            self.assertEqual(client.post('/api/login',json={'username':'invitado','password':'temporal123'}).status_code,200)
+            self.assertTrue(client.get('/api/session').get_json()['must_change_password'])
+            self.assertTrue(client.get('/api/data').get_json()['password_change_required'])
+            self.assertEqual(client.get('/api/data').status_code,403)
+            self.assertEqual(client.post('/api/profile',json={'name':'Intento'}).status_code,403)
+            self.assertEqual(client.post('/api/tasks',json={'title':'Intento'}).status_code,403)
+        password={'current_password':'incorrecta','new_password':'nueva1234','confirm_password':'nueva1234'}
+        self.assertEqual(first.post('/api/password/change',json=password).status_code,400)
+        password['current_password']='temporal123';password['confirm_password']='distinta'
+        self.assertEqual(first.post('/api/password/change',json=password).status_code,400)
+        password.update(new_password='temporal123',confirm_password='temporal123')
+        self.assertEqual(first.post('/api/password/change',json=password).status_code,400)
+        self.assertTrue(first.get('/api/session').get_json()['must_change_password'])
+        password.update(new_password='nueva1234',confirm_password='nueva1234')
+        self.assertEqual(first.post('/api/password/change',json=password).status_code,200)
+        self.assertFalse(first.get('/api/session').get_json()['must_change_password'])
+        self.assertEqual(first.get('/api/data').status_code,200)
+        self.assertIsNone(second.get('/api/session').get_json()['user'])
+        self.assertEqual(second.post('/api/login',json={'username':'invitado','password':'temporal123'}).status_code,401)
+        self.assertEqual(second.post('/api/login',json={'username':'invitado','password':'nueva1234'}).status_code,200)
+
+    def test_registration_policy_and_first_admin(self):
+        anonymous=app.app.test_client()
+        registration={'name':'Nueva','username':'nueva','password':'clave123'}
+        with patch.dict(app.SETTINGS,{'allow_self_registration':False}):
+            self.assertFalse(anonymous.get('/api/session').get_json()['allow_self_registration'])
+            self.assertEqual(anonymous.post('/api/register',json=registration).status_code,403)
+            self.assertEqual(self.post('users',{'name':'Invitado','username':'creado','password':'clave123'},user=1)[0],200)
+            self.assertEqual(self.post('users',{'name':'No','username':'no','password':'clave123'},user=2)[0],403)
+        with patch.dict(app.SETTINGS,{'allow_self_registration':True}):
+            self.assertTrue(anonymous.get('/api/session').get_json()['allow_self_registration'])
+            self.assertEqual(anonymous.post('/api/register',json=registration).status_code,200)
+            self.assertFalse(anonymous.get('/api/session').get_json()['must_change_password'])
+            self.assertFalse(anonymous.get('/api/session').get_json()['user']['admin'])
+        old=app.DB
+        with tempfile.TemporaryDirectory() as temp:
+            try:
+                app.DB=os.path.join(temp,'new.db');app.init();client=app.app.test_client()
+                with patch.dict(app.SETTINGS,{'allow_self_registration':True}):
+                    self.assertEqual(client.post('/api/register',json=registration).status_code,400)
+                    self.assertEqual(client.post('/api/setup',json=registration).status_code,200)
+                session=client.get('/api/session').get_json()
+                self.assertTrue(session['user']['admin']);self.assertFalse(session['must_change_password'])
+            finally: app.DB=old
+
     def test_first_account_creation_is_serialized_between_requests(self):
         old=app.DB
         with tempfile.TemporaryDirectory() as temp:
@@ -475,5 +532,20 @@ class TaskTypesTest(unittest.TestCase):
             task=c.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
             self.assertEqual(task['type_id'],app.ensure_base_type(c,1))
             self.assertEqual(task['status_id'],app.default_status(c,task['type_id']))
+
+    def test_existing_users_are_not_marked_as_temporary_during_migration(self):
+        old=app.DB
+        with tempfile.TemporaryDirectory() as temp:
+            try:
+                app.DB=os.path.join(temp,'legacy.db')
+                with sqlite3.connect(app.DB) as c:
+                    c.execute('CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT NOT NULL,username TEXT UNIQUE NOT NULL,password TEXT NOT NULL,salt TEXT NOT NULL,admin INTEGER NOT NULL DEFAULT 0)')
+                    c.execute("INSERT INTO users VALUES(1,'Anterior','anterior','hash','salt',1)")
+                app.init();app.init()
+                with app.db() as c:
+                    user=c.execute('SELECT * FROM users WHERE id=1').fetchone()
+                    self.assertEqual(user['must_change_password'],0)
+                    self.assertEqual((user['username'],user['password']),('anterior','hash'))
+            finally: app.DB=old
 
 if __name__ == '__main__': unittest.main()

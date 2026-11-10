@@ -24,6 +24,7 @@ class SettingsTest(unittest.TestCase):
             config=Path(tmp)/'config.ini'
             config.write_text('[app]\ndatabase=data/tasks.db\ntimezone=UTC\nport=8100\n')
             actual=load_settings(config, environ={})
+            self.assertFalse(actual['allow_self_registration'])
             self.assertEqual(actual['database'],str((ROOT/'data/tasks.db').resolve()))
             self.assertEqual((actual['timezone'],actual['port']),('UTC',8100))
             overridden=load_settings(config, environ={'TASKS_DB':'/tmp/otra.db','TASKS_TIMEZONE':'UTC','PORT':'8200'})
@@ -31,13 +32,15 @@ class SettingsTest(unittest.TestCase):
             config_only=load_settings(config, environ={'FLUJO_CONFIG_ONLY':'1','PORT':'8200','TASKS_DB':'/tmp/otra.db'})
             self.assertEqual(config_only['port'],8100)
             self.assertEqual(config_only['database'],actual['database'])
+            config.write_text('[app]\nallow_self_registration = true\n')
+            self.assertTrue(load_settings(config,environ={})['allow_self_registration'])
 
     def test_invalid_or_missing_explicit_config_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             config=Path(tmp)/'config.ini'
             with self.assertRaisesRegex(ValueError,'No existe'):
                 load_settings(config,environ={})
-            for contents in ('[app]\nport=99999\n','[app]\ntimezone=Invalid/Zone\n','[app]\ndatabase=\n','[app]\nsocket=relative.sock\n','[other]\nx=1\n'):
+            for contents in ('[app]\nport=99999\n','[app]\ntimezone=Invalid/Zone\n','[app]\ndatabase=\n','[app]\nsocket=relative.sock\n','[app]\nallow_self_registration=quizas\n','[other]\nx=1\n'):
                 config.write_text(contents)
                 with self.subTest(contents=contents), self.assertRaises(ValueError):
                     load_settings(config,environ={})
