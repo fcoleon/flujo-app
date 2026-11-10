@@ -4,8 +4,6 @@ import os
 from pathlib import Path
 import socket
 import stat
-import re
-import subprocess
 from settings import load_settings
 
 settings = load_settings()
@@ -13,7 +11,7 @@ bind = 'unix:' + settings['socket']
 workers = 2
 worker_class = 'gthread'
 threads = 2
-umask = 0o177  # Inicialmente solo el usuario de la aplicación accede al socket.
+umask = 0o111  # El acceso se controla mediante el directorio privado del socket.
 accesslog = '-'
 errorlog = '-'
 
@@ -33,21 +31,3 @@ def on_starting(server):
             raise RuntimeError(f'El socket ya está en uso o no puede verificarse: {path}')
     from app import init
     init()
-
-
-def when_ready(server):
-    group = os.environ.get('FLUJO_SOCKET_GROUP')
-    if not group:
-        # Compatibilidad con la configuración de Supervisor anterior.
-        runtime_config = Path('/etc/tmpfiles.d/flujo-app.conf')
-        if runtime_config.is_file():
-            text = runtime_config.read_text(encoding='utf-8')
-            match = re.search(r'^# flujo-app user=\S+ group=(\S+)$', text, re.MULTILINE)
-            if match: group = match.group(1)
-            else:
-                parts = text.split()
-                if len(parts) == 6 and parts[0] == 'd': group = parts[4]
-    if group:
-        if not re.fullmatch(r'[a-z_][a-z0-9_-]*[$]?', group):
-            raise RuntimeError('El grupo del socket no es válido')
-        subprocess.run(['setfacl', '-m', f'g::---,g:{group}:rw,o::---', settings['socket']], check=True)

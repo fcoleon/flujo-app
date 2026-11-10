@@ -1,4 +1,5 @@
 import importlib.util
+import runpy
 import errno
 import os
 from pathlib import Path
@@ -16,6 +17,13 @@ spec.loader.exec_module(deploy)
 
 
 class DeploymentConfigTest(unittest.TestCase):
+    def test_gunicorn_uses_directory_permissions_without_acl(self):
+        config = DEPLOY_SCRIPT.parent / 'gunicorn.conf.py'
+        with patch('settings.load_settings', return_value={'socket': '/run/custom/app.sock'}):
+            gunicorn = runpy.run_path(str(config))
+            self.assertEqual(0o777 & ~gunicorn['umask'], 0o666)
+            self.assertNotIn('when_ready', gunicorn)
+
     def test_generated_templates_fill_all_values_and_preserve_nginx_variables(self):
         values = {'APP_DIR': '/srv/flujo', 'APP_USER': 'ubuntu', 'SOCKET_PATH': '/run/flujo/flujo.sock',
                   'CONFIG_PATH': '/srv/flujo/config.ini', 'NGINX_GROUP': 'www-data',
@@ -248,7 +256,7 @@ class DeploymentConfigTest(unittest.TestCase):
 
     def test_shared_socket_directory_permissions_are_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'shared'; directory.mkdir(mode=0o755)
+            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'shared'; directory.mkdir(mode=0o750)
             before=directory.stat().st_mode
             user=deploy.pwd.getpwuid(os.getuid()).pw_name
             group=deploy.grp.getgrgid(os.getgid()).gr_name
@@ -262,7 +270,7 @@ class DeploymentConfigTest(unittest.TestCase):
 
     def test_failed_directory_check_restores_previous_runtime_config(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'shared'; directory.mkdir()
+            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'shared'; directory.mkdir(mode=0o750)
             user=deploy.pwd.getpwuid(os.getuid()).pw_name
             group=deploy.grp.getgrgid(os.getgid()).gr_name
             original=f'd /run/flujo 0750 {user} {group} -\n'; config.write_text(original)
@@ -270,6 +278,31 @@ class DeploymentConfigTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'permisos'):
                     deploy.ensure_socket_directory(user,group,directory/'custom.sock',install=False)
             self.assertEqual(config.read_text(),original)
+
+    def test_legacy_managed_directory_keeps_private_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'managed'; directory.mkdir(mode=0o750)
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            config.write_text(f'd {directory} 0750 {user} {group} -\n')
+            with patch.object(deploy,'TMPFILES_FILE',config), patch.object(deploy,'as_user'), \
+                 patch.object(deploy.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())), \
+                 patch.object(deploy,'run') as run:
+                deploy.ensure_socket_directory(user,group,directory/'app.sock',install=False)
+            self.assertIn(f'd {directory} 0750 {user} {group} -',config.read_text())
+            run.assert_called_once_with(['systemd-tmpfiles','--create',str(config)])
+
+    def test_public_socket_directory_is_rejected_without_changing_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp); config=base/'tmpfiles.conf'; directory=base/'shared'; directory.mkdir(mode=0o755)
+            before=directory.stat().st_mode
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            group=deploy.grp.getgrgid(os.getgid()).gr_name
+            with patch.object(deploy,'TMPFILES_FILE',config):
+                with self.assertRaisesRegex(ValueError,'directorio privado'):
+                    deploy.ensure_socket_directory(user,group,directory/'custom.sock',install=True)
+            self.assertEqual(directory.stat().st_mode,before)
+            self.assertFalse(config.exists())
 
     def test_update_changes_nginx_and_reloads_when_socket_changes(self):
         with tempfile.TemporaryDirectory() as tmp:

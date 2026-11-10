@@ -2,7 +2,7 @@
 
 Flujo usa Flask en desarrollo y Gunicorn detrás de Nginx en producción. Supervisor mantiene Gunicorn en ejecución; la comunicación con Nginx usa un socket Unix, sin reservar un puerto TCP para la aplicación.
 
-La aplicación debe estar en su ruta definitiva. Se requiere Python 3.9 o superior, `python3-venv`, `tzdata`, Nginx, Supervisor, `systemd-tmpfiles`, `iproute2` y el paquete `acl` (`sudo apt install acl`). Nginx y Supervisor deben estar en ejecución. El usuario de la aplicación necesita acceso de lectura al proyecto y de escritura a la base de datos y su directorio.
+La aplicación debe estar en su ruta definitiva. Se requiere Python 3.9 o superior, `python3-venv`, `tzdata`, Nginx, Supervisor, `systemd-tmpfiles` e `iproute2`. Nginx y Supervisor deben estar en ejecución. El usuario de la aplicación necesita acceso de lectura al proyecto y de escritura a la base de datos y su directorio.
 
 ## Configuración
 
@@ -22,7 +22,7 @@ socket = /run/flujo/flujo.sock
 allow_self_registration = false
 ```
 
-`database` puede ser absoluta o relativa a la raíz. `port` se usa solo al ejecutar `python app.py` en desarrollo; en producción Gunicorn utiliza `socket`. Configura el socket con una ruta absoluta de hasta 100 bytes, sin espacios. El usuario de la aplicación debe poder escribir en su directorio y el grupo de Nginx debe poder acceder a él y a sus directorios superiores. Conserva `config.ini`, `.venv` y la base de datos al copiar actualizaciones.
+`database` puede ser absoluta o relativa a la raíz. `port` se usa solo al ejecutar `python app.py` en desarrollo; en producción Gunicorn utiliza `socket`. Configura el socket con una ruta absoluta de hasta 100 bytes, sin espacios. El directorio inmediato del socket debe ser privado, pertenecer al usuario de la aplicación y al grupo de Nginx, y no permitir acceso a otros usuarios. El grupo de Nginx también debe poder atravesar los directorios superiores. Conserva `config.ini`, `.venv` y la base de datos al copiar actualizaciones.
 
 Con `allow_self_registration = false` solo se puede crear la primera cuenta o agregar usuarios desde una cuenta administradora. Si se cambia a `true`, cualquiera que pueda acceder a la aplicación podrá registrarse; reinicia Flujo para aplicar el cambio.
 
@@ -32,7 +32,7 @@ Con `allow_self_registration = false` solo se puede crear la primera cuenta o ag
 sudo python3 deploy/deploy.py install --server-name tareas.ejemplo.com --user ubuntu
 ```
 
-El script crea `.venv`, instala las dependencias, valida el socket, configura Supervisor y Nginx y arranca la aplicación. Si el directorio del socket no existe, el script lo crea y configura `systemd-tmpfiles` para recrearlo al reiniciar; su directorio superior debe existir. Si ya existe, conserva sus permisos y debes asegurar que se mantenga disponible tras reiniciar. El socket permite acceso al usuario de la app y al grupo de Nginx (`www-data` por defecto) mediante ACL; si Nginx usa otro grupo, indícalo con `--nginx-group GRUPO`. El script no cambia la membresía de los usuarios en los grupos.
+El script crea `.venv`, instala las dependencias, valida el socket, configura Supervisor y Nginx y arranca la aplicación. Si el directorio del socket no existe, el script lo crea con modo `0750` y configura `systemd-tmpfiles` para recrearlo al reiniciar; su directorio superior debe existir. Si ya existe y no fue creado por el script, conserva sus permisos y debes asegurar que cumpla esos requisitos y se mantenga disponible tras reiniciar. El acceso al socket se controla mediante ese directorio; el socket se crea con modo `0666`, accesible solo a quienes puedan atravesarlo. El grupo de Nginx es `www-data` por defecto; si usa otro grupo, indícalo con `--nginx-group GRUPO`. El script no cambia la membresía de los usuarios en los grupos.
 
 Se comparte el Nginx existente; no se reemplazan otros sitios ni se actualizan otros procesos de Supervisor. Agrega `--dry-run` para generar los archivos sin instalarlos. Para conservar una configuración Nginx existente, usa `--skip-nginx` y configura manualmente su destino:
 

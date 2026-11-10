@@ -181,6 +181,10 @@ def ensure_socket_directory(user, group, socket_path, install):
     try:
         if old_content != content: write_atomic(TMPFILES_FILE, content)
         if managed: run(['systemd-tmpfiles','--create',str(TMPFILES_FILE)])
+        info = parent.stat()
+        if info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o007:
+            fail(f'El directorio {parent} debe pertenecer a {user}:{group} y no permitir acceso a otros usuarios. '
+                 'Usa un directorio privado para el socket o configura sus permisos manualmente.')
         for flag in ('-x','-w'):
             try: as_user(user,'test',flag,parent)
             except subprocess.CalledProcessError: fail(f'{user} necesita permisos de acceso y escritura en {parent}.')
@@ -404,7 +408,6 @@ def main(argv=None):
         print(f'Configuraciones generadas en {output}', flush=True)
         if args.dry_run: return 0
     if os.geteuid() != 0: fail('Este modo requiere sudo.')
-    if not shutil.which('setfacl'): fail('Falta setfacl; instala el paquete acl: sudo apt install acl')
     for binary in ('runuser', 'supervisorctl', 'systemd-tmpfiles'):
         if not shutil.which(binary): fail(f'Falta {binary}; revisa deploy/README.md.')
     own_pid = check_program_identity()
