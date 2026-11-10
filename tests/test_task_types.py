@@ -133,6 +133,57 @@ class TaskTypesTest(unittest.TestCase):
             self.assertEqual(row['password'],app.hashpw('nueva1234',row['salt']))
             self.assertNotEqual(row['password'],app.hashpw('anterior123',row['salt']))
 
+    def test_workspace_settings_and_blocked_access(self):
+        self.assertEqual(self.post('workspace/update',{'name':'Equipo'},user=2)[0],403)
+        self.assertEqual(self.post('workspace/update',{'name':'  Equipo  '})[0],200)
+        self.assertEqual(self.post('workspace/block',{'user_id':2,'blocked':True},user=3)[0],403)
+        self.assertEqual(self.post('workspace/block',{'user_id':1,'blocked':True})[0],400)
+        self.assertEqual(self.post('workspace/block',{'user_id':2,'blocked':1})[0],400)
+        self.assertEqual(self.post('workspace/block',{'user_id':2,'blocked':True})[0],200)
+        with app.db() as c:
+            salt='ab'*16
+            c.execute('UPDATE users SET salt=?,password=? WHERE id=2',(salt,app.hashpw('clave123',salt)))
+        login=app.Handler.__new__(app.Handler);login.path='/api/login'
+        raw=json.dumps({'username':'editor','password':'clave123'}).encode()
+        login.headers={'Content-Length':str(len(raw))};login.rfile=io.BytesIO(raw);login.wfile=io.BytesIO()
+        login.user=lambda c:None;sent=[];login.send_response=lambda status:sent.append(('status',status))
+        login.send_header=lambda key,value:sent.append((key,value));login.end_headers=lambda:None
+        login.do_POST()
+        self.assertIn(('status',200),sent)
+        cookie=next(value for key,value in sent if key=='Set-Cookie')
+        session=app.Handler.__new__(app.Handler);session.path='/api/session';session.headers={'Cookie':cookie.split(';')[0]}
+        result=[];session.respond=lambda data,status=200:result.append((status,data));session.do_GET()
+        self.assertEqual(result[0][1]['user']['id'],2);self.assertTrue(result[0][1]['blocked'])
+        def get(path,user):
+            handler=app.Handler.__new__(app.Handler);handler.path='/api/'+path
+            handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=?',(user,)).fetchone()
+            result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET();return result[0]
+        self.assertTrue(get('session',2)[1]['blocked'])
+        status,body=get('data',2)
+        self.assertEqual(status,403);self.assertTrue(body['blocked']);self.assertNotIn('tasks',body)
+        self.assertEqual(self.post('profile',{'name':'No permitido'},user=2)[0],403)
+        self.assertEqual(self.post('tasks',{'title':'No permitido','project_id':1,'column_id':1},user=2)[0],403)
+        self.assertEqual(get('data',1)[1]['workspace_name'],'Equipo')
+        self.assertEqual(self.post('workspace/block',{'user_id':2,'blocked':False})[0],200)
+        self.assertFalse(get('session',2)[1]['blocked'])
+        self.assertEqual(get('data',2)[0],200)
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT role FROM members WHERE project_id=1 AND user_id=2').fetchone()['role'],'editor')
+
+    def test_board_data_includes_comment_counts_for_visible_tasks(self):
+        task=self.post('tasks',{'title':'Con comentarios','project_id':1,'column_id':1})[1]['id']
+        empty=self.post('tasks',{'title':'Sin comentarios','project_id':1,'column_id':1})[1]['id']
+        private=self.post('tasks',{'title':'Privada','project_id':2,'column_id':2})[1]['id']
+        for body in ('Uno','Dos'):
+            self.assertEqual(self.post('comments',{'task_id':task,'body':body})[0],200)
+        self.post('comments',{'task_id':private,'body':'Privado'})
+        handler=app.Handler.__new__(app.Handler);handler.path='/api/data'
+        handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=3').fetchone()
+        result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET()
+        self.assertEqual(result[0][0],200)
+        counts={t['id']:t['comment_count'] for t in result[0][1]['tasks']}
+        self.assertEqual(counts[task],2);self.assertEqual(counts[empty],0);self.assertNotIn(private,counts)
+
     def test_delete_type_rejects_in_use_and_preserves_metrics(self):
         typ=self.post('task-types',{'project_id':1,'name':'Personalizado'})[1]['id']
         base=None
@@ -176,18 +227,21 @@ class TaskTypesTest(unittest.TestCase):
         self.assertEqual(self.post('task-types/update',{'id':base,'name':'Base','statuses':[base_sts[0]],'deleted_status_ids':[base_sts[1]['id']]})[0],400)
 
     def test_edit_project_requires_project_admin(self):
-        payload={'project_id':1,'name':'  Plan actualizado  ','description':'  Nueva descripción  '}
+        payload={'project_id':1,'name':'  Plan actualizado  ','description':'  Nueva descripción  ','color':'#12ab34'}
         self.assertEqual(self.post('projects/update',payload,user=2)[0],403)
         self.assertEqual(self.post('projects/update',payload,user=3)[0],403)
         with app.db() as c: c.execute("UPDATE members SET role='admin' WHERE project_id=1 AND user_id=2")
         self.assertEqual(self.post('projects/update',payload,user=2)[0],200)
         with app.db() as c:
-            project=c.execute('SELECT name,description FROM projects WHERE id=1').fetchone()
-            self.assertEqual((project['name'],project['description']),('Plan actualizado','Nueva descripción'))
+            project=c.execute('SELECT name,description,color FROM projects WHERE id=1').fetchone()
+            self.assertEqual((project['name'],project['description'],project['color']),('Plan actualizado','Nueva descripción','#12ab34'))
         self.assertEqual(self.post('projects/update',{'project_id':1,'name':' ','description':''},user=2)[0],400)
         self.assertEqual(self.post('projects/update',{'project_id':1,'name':'A','description':'x'*5001},user=2)[0],400)
+        self.assertEqual(self.post('projects/update',{'project_id':1,'name':'A','color':'red'},user=2)[0],400)
         self.assertEqual(self.post('projects/update',{'project_id':999,'name':'A'},user=1)[0],400)
         self.assertEqual(self.post('projects/update',{'project_id':1,'name':'Nuevo','description':''},user=1)[0],200)
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT color FROM projects WHERE id=1').fetchone()['color'],'#12ab34')
 
     def test_column_rename_and_order_permissions(self):
         with app.db() as c:

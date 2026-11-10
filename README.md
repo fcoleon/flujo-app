@@ -48,6 +48,8 @@ Los usuarios pertenecen al workspace. Un administrador general crea usuarios y p
 
 Cada persona puede editar su nombre y cambiar su contraseña desde «Mi perfil». Para cambiar la contraseña debe ingresar la actual y confirmar la nueva.
 
+Desde el nombre del workspace se puede consultar la lista de usuarios. Los administradores generales pueden cambiar el nombre y bloquear o desbloquear cuentas. Una persona bloqueada puede iniciar sesión, pero no acceder a los datos ni operar en el workspace; sus permisos de proyecto se conservan para cuando sea desbloqueada. El bloqueo también se comprueba en las sesiones existentes al hacer una solicitud.
+
 Una tarea con proyectos es accesible a quien tenga acceso a alguno de ellos. Una tarea sin proyecto está disponible en «Sin proyecto» para los administradores y la persona responsable, que puede editarla. Una subtarea sin proyecto también hereda el acceso de su tarea principal.
 
 El tipo base de cada proyecto tiene un estado en curso y otro finalizado. Los tipos personalizados permiten agregar estados, modificar su nombre y color, y ordenarlos. Debe existir al menos un estado en curso y uno finalizado. Se pueden eliminar tipos y estados personalizados cuando ninguna tarea los utiliza, incluidas tareas de otros proyectos o sin proyecto. El tipo base conserva sus dos estados. Las tareas con el tipo base general adoptan el tipo base equivalente al incorporarse a un proyecto, manteniendo su categoría de finalización.

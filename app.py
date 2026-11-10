@@ -27,6 +27,8 @@ def init():
         CREATE TABLE IF NOT EXISTS placements(task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, column_id INTEGER NOT NULL REFERENCES columns(id) ON DELETE CASCADE, position INTEGER NOT NULL, PRIMARY KEY(task_id,project_id));
         CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, message TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);''')
+        if 'blocked' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
+            c.execute('ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0')
         c.executescript('''CREATE TABLE IF NOT EXISTS task_types(id INTEGER PRIMARY KEY, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, is_base INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS task_statuses(id INTEGER PRIMARY KEY, type_id INTEGER NOT NULL REFERENCES task_types(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, is_done INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL);''')
         cols={r['name'] for r in c.execute('PRAGMA table_info(tasks)')}
@@ -50,6 +52,7 @@ def init():
                                  WHERE ty.project_id IS NULL AND ty.is_base=1 GROUP BY t.id''').fetchall():
             apply_project_base(c,task['id'],task['project_id'])
         c.execute('CREATE TABLE IF NOT EXISTS app_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        c.execute("INSERT OR IGNORE INTO app_meta(key,value) VALUES('workspace_name','Mi workspace')")
         c.execute('CREATE TABLE IF NOT EXISTS metric_events(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, task_id INTEGER NOT NULL, event TEXT NOT NULL, occurred_at TEXT NOT NULL, task_created_at TEXT NOT NULL, type_id INTEGER NOT NULL, type_name TEXT NOT NULL)')
         metric_columns={row['name'] for row in c.execute('PRAGMA table_info(metric_events)')}
         for name,definition in [('actor_id','INTEGER'),('actor_name','TEXT'),('assignee_id','INTEGER'),('assignee_name','TEXT'),('identity_recorded','INTEGER NOT NULL DEFAULT 0')]:
@@ -204,8 +207,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with db() as c:
                 u=self.user(c)
-                if path=='/api/session': return self.respond({'user':dict(u) if u else None,'needs_setup':not bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone())})
+                blocked=bool(u and c.execute('SELECT blocked FROM users WHERE id=?',(u['id'],)).fetchone()['blocked'])
+                if path=='/api/session': return self.respond({'user':dict(u) if u else None,'blocked':blocked,'needs_setup':not bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone())})
                 if not u: return self.respond({'error':'Inicia sesión'},401)
+                if blocked: return self.respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
                 if path=='/api/data':
                     projects=[]
                     for p in c.execute('SELECT * FROM projects ORDER BY id').fetchall():
@@ -217,11 +222,13 @@ class Handler(BaseHTTPRequestHandler):
                             d['members']=[dict(x) for x in c.execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=?',(p['id'],))]
                             projects.append(d)
                     allowed={p['id'] for p in projects}; tasks=[]
-                    for t in c.execute('SELECT * FROM tasks ORDER BY id DESC').fetchall():
+                    for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count FROM tasks t
+                                          LEFT JOIN (SELECT task_id,COUNT(*) AS comment_count FROM comments GROUP BY task_id) cm ON cm.task_id=t.id
+                                          ORDER BY t.id DESC''').fetchall():
                         placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
                         if can_task(c,u,t['id']):
                             d=dict(t); d['placements']=placements; d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(c.execute('SELECT 1 FROM placements WHERE task_id=?',(t['id'],)).fetchone()); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None; tasks.append(d)
-                    return self.respond({'user':dict(u),'users':[dict(x) for x in c.execute('SELECT id,name,username,admin FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
+                    return self.respond({'user':dict(u),'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
                 if path=='/api/analytics':
                     params=parse_qs(urlparse(self.path).query); p=int(params['project_id'][0]); month=params['month'][0]
                     if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return self.respond({'error':'Proyecto no encontrado'},404)
@@ -257,7 +264,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not u: return self.respond({'error':'Inicia sesión'},401)
                 if path=='/api/logout':
                     cookie=SimpleCookie(); cookie.load(self.headers.get('Cookie','')); c.execute('DELETE FROM sessions WHERE token=?',(cookie['session'].value if 'session' in cookie else '',)); return self.respond({'ok':True})
-                if path=='/api/profile':
+                if c.execute('SELECT blocked FROM users WHERE id=?',(u['id'],)).fetchone()['blocked']:
+                    return self.respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
+                if path=='/api/workspace/update':
+                    if not u['admin']: raise PermissionError('Solo un administrador del workspace puede cambiar el nombre')
+                    name=b.get('name')
+                    if not isinstance(name,str) or not name.strip() or len(name.strip())>120: raise ValueError('El nombre debe tener entre 1 y 120 caracteres')
+                    c.execute("UPDATE app_meta SET value=? WHERE key='workspace_name'",(name.strip(),))
+                elif path=='/api/workspace/block':
+                    if not u['admin']: raise PermissionError('Solo un administrador del workspace puede bloquear usuarios')
+                    target=int(b['user_id']); blocked=b.get('blocked')
+                    if type(blocked) is not bool: raise ValueError('Estado de bloqueo inválido')
+                    if target==u['id']: raise ValueError('No puedes bloquear tu propia cuenta')
+                    if not c.execute('SELECT 1 FROM users WHERE id=?',(target,)).fetchone(): raise ValueError('Usuario no encontrado')
+                    c.execute('UPDATE users SET blocked=? WHERE id=?',(int(blocked),target))
+                elif path=='/api/profile':
                     name=b.get('name')
                     if not isinstance(name,str) or not name.strip() or len(name.strip())>120: raise ValueError('El nombre debe tener entre 1 y 120 caracteres')
                     current=b.get('current_password',''); new=b.get('new_password',''); confirmation=b.get('confirm_password','')
@@ -285,13 +306,15 @@ class Handler(BaseHTTPRequestHandler):
                     for i,n in enumerate(['Por hacer','En progreso','En revisión','Completado']): c.execute('INSERT INTO columns(project_id,name,position) VALUES(?,?,?)',(p,n,i))
                     c.commit(); return self.respond({'id':p})
                 elif path=='/api/projects/update':
-                    p=int(b['project_id']); project=c.execute('SELECT id FROM projects WHERE id=?',(p,)).fetchone()
+                    p=int(b['project_id']); project=c.execute('SELECT id,color FROM projects WHERE id=?',(p,)).fetchone()
                     if not project: raise ValueError('Proyecto no encontrado')
                     if role(c,u,p)!='admin': raise PermissionError('Solo un administrador del proyecto puede editarlo')
                     name=str(b.get('name','')).strip(); description=str(b.get('description','')).strip()
                     if not name or len(name)>120: raise ValueError('El nombre debe tener entre 1 y 120 caracteres')
                     if len(description)>5000: raise ValueError('La descripción debe tener hasta 5000 caracteres')
-                    c.execute('UPDATE projects SET name=?,description=? WHERE id=?',(name,description,p))
+                    color=b.get('color',project['color'])
+                    if 'color' in b and (not isinstance(color,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',color)): raise ValueError('Color inválido')
+                    c.execute('UPDATE projects SET name=?,description=?,color=? WHERE id=?',(name,description,color,p))
                 elif path=='/api/members':
                     p=int(b['project_id'])
                     if role(c,u,p)!='admin': raise PermissionError('No tienes permisos para administrar este proyecto')
