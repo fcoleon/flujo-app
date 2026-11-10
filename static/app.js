@@ -7,13 +7,14 @@ const columnMotion=new WeakMap();
 async function api(path,body){let r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});let d=await r.json();if(!r.ok){if(d.blocked)showBlocked();else if(d.password_change_required)showPasswordChange();throw Error(d.error||'Ocurrió un error')}return d}
 function toast(s){$('#toast').textContent=s;$('#toast').classList.add('show');setTimeout(()=>$('#toast').classList.remove('show'),3000)}
 function modal(html,wide=false){
+  closeStatusMenu();
   $('#modal').innerHTML=`<div class="overlay"><div class="dialog${wide?' task-dialog':''}">${html}</div></div>`;
   const overlay=$('#modal .overlay');let startedOnOverlay=false,endedOnOverlay=false;
   overlay.addEventListener('pointerdown',e=>{startedOnOverlay=e.isPrimary&&e.button===0&&e.target===overlay},true);
   overlay.addEventListener('pointerup',e=>{endedOnOverlay=e.isPrimary&&e.button===0&&e.target===overlay},true);
   overlay.addEventListener('click',e=>{if(startedOnOverlay&&endedOnOverlay&&e.target===overlay)closeModal();startedOnOverlay=endedOnOverlay=false});
 }
-async function closeModal(force=false){if(taskDraft&&!force&&!await flushTaskDraft())return false;if(taskDraft){clearTimeout(taskDraft.timer);taskDraft=null}$('#modal').innerHTML='';return true}
+async function closeModal(force=false){if(taskDraft&&!force&&!await flushTaskDraft())return false;closeStatusMenu();if(taskDraft){clearTimeout(taskDraft.timer);taskDraft=null}$('#modal').innerHTML='';return true}
 function descriptionText(t){if(t.description_format!=='html')return t.description;let d=document.createElement('div');d.innerHTML=t.description;return d.textContent||''}
 function normalizeSearch(value){return String(value??'').normalize('NFD').replace(/\p{M}/gu,'').toLocaleLowerCase('es').trim()}
 function matchesSearch(t,query){let q=normalizeSearch(query);return !q||normalizeSearch(t.title).includes(q)||normalizeSearch(descriptionText(t)).includes(q)}
@@ -119,13 +120,54 @@ async function dropColumn(e){
 }
 
 function taskStatus(t){return t.task_type?.statuses.find(s=>s.id===t.status_id)}
+let statusMenu=null,statusMenuTrigger=null;
+function closeStatusMenu(restoreFocus=false){
+  if(!statusMenu)return;
+  let trigger=statusMenuTrigger;statusMenu.remove();statusMenu=null;statusMenuTrigger=null;
+  trigger?.setAttribute('aria-expanded','false');
+  document.removeEventListener('pointerdown',statusMenuOutside,true);document.removeEventListener('scroll',statusMenuScroll,true);window.removeEventListener('resize',statusMenuResize);
+  if(restoreFocus&&trigger?.isConnected)trigger.focus();
+}
+function statusMenuOutside(e){if(statusMenu&&!statusMenu.contains(e.target)&&!statusMenuTrigger?.contains(e.target))closeStatusMenu()}
+function statusMenuScroll(e){if(statusMenu&&!statusMenu.contains(e.target))closeStatusMenu()}
+function statusMenuResize(){closeStatusMenu()}
+function statusButton(t,editable,detail=false){
+  let visual=taskPropertyVisual('status',t,editable);
+  if(!editable)return detail?`<span class="detail-value">${visual}</span>`:visual;
+  return `<button type="button" class="quick-control status-trigger ${detail?'detail-control':''}" aria-label="Cambiar estado de ${esc(t.title)}" aria-haspopup="menu" aria-expanded="false" onclick="openStatusMenu(event,${t.id},${detail})" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation();event.preventDefault()"><span class="${detail?'detail-value':''}" aria-hidden="true">${visual}</span></button>`;
+}
+function openStatusMenu(e,id,detail){
+  e.stopPropagation();let trigger=e.currentTarget,task=data.tasks.find(t=>t.id===id);
+  if(statusMenuTrigger===trigger){closeStatusMenu();return}
+  closeStatusMenu();if(!task?.task_type?.statuses?.length)return;
+  let menu=document.createElement('div');menu.className='status-menu';menu.setAttribute('role','menu');menu.setAttribute('aria-label','Cambiar estado');
+  menu.innerHTML=task.task_type.statuses.map(st=>`<button type="button" role="menuitemradio" aria-checked="${st.id===task.status_id}" class="status-option ${st.id===task.status_id?'selected':''}" data-status-id="${st.id}"><i style="background:${esc(st.color)}"></i><span class="status-option-text">${esc(st.name)} <small>(${st.is_done?'Finalizado':'En curso'})</small></span>${st.id===task.status_id?'<span class="status-option-check" aria-hidden="true">✓</span>':''}</button>`).join('');
+  document.body.appendChild(menu);statusMenu=menu;statusMenuTrigger=trigger;trigger.setAttribute('aria-expanded','true');
+  let rect=trigger.getBoundingClientRect(),width=menu.offsetWidth,height=menu.offsetHeight;
+  menu.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-width-8))+'px';
+  menu.style.top=Math.max(8,Math.min(rect.bottom+6+height<=window.innerHeight-8?rect.bottom+6:rect.top-height-6,window.innerHeight-height-8))+'px';
+  menu.addEventListener('click',async event=>{
+    event.stopPropagation();let option=event.target.closest('.status-option');if(!option)return;
+    let value=Number(option.dataset.statusId);closeStatusMenu(true);if(value===task.status_id)return;
+    if(detail){let control=trigger.closest('form')?.querySelector('#taskStatusSelect');if(control){control.value=String(value);await saveTaskField(id,'status',control)}}
+    else{trigger.disabled=true;try{await api('task/type-status',{id,type_id:task.type_id,status_id:value});await refresh()}catch(err){trigger.disabled=false;toast(err.message)}}
+  });
+  menu.addEventListener('keydown',event=>{
+    let options=[...menu.querySelectorAll('.status-option')],index=options.indexOf(document.activeElement);
+    if(event.key==='Escape'){event.preventDefault();closeStatusMenu(true);return}
+    if(event.key==='Tab'){closeStatusMenu(true);return}
+    if(event.key==='ArrowDown')index=(index+1)%options.length;else if(event.key==='ArrowUp')index=(index-1+options.length)%options.length;else if(event.key==='Home')index=0;else if(event.key==='End')index=options.length-1;else return;
+    event.preventDefault();options[index].focus();
+  });
+  document.addEventListener('pointerdown',statusMenuOutside,true);document.addEventListener('scroll',statusMenuScroll,true);window.addEventListener('resize',statusMenuResize);
+  (menu.querySelector('[aria-checked="true"]')||menu.querySelector('.status-option')).focus();
+}
 function quickSelect(label,content,options,onchange){return `<span class="quick-control" title="${esc(label)}" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation()"><span aria-hidden="true">${content}</span><select aria-label="${esc(label)}" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" onchange="${onchange}">${options}</select></span>`}
 function card(t,subtaskCount=0){
   let u=data.users.find(x=>x.id===t.assignee_id), p=data.projects.find(x=>x.id===active), editable=t.can_edit&&(!p||p.role!=='viewer'), draggable=editable&&!!p;
   let priority=`<span class="priority ${t.priority==='Alta'?'high':t.priority==='Baja'?'low':''}">${esc(t.priority)}${editable?' <span class="quick-chevron">⌄</span>':''}</span>`;
   let priorityControl=editable?quickSelect('Cambiar prioridad de '+t.title,priority,['Baja','Normal','Alta'].map(v=>`<option value="${v}" ${t.priority===v?'selected':''}>${v}</option>`).join(''),`quickUpdate(event,${t.id},'priority')`):priority;
-  let st=taskStatus(t), status=st?`<span class="status-badge" style="--status-color:${esc(st.color)}"><i></i><span class="status-name">${esc(st.name)}</span>${editable?'<span class="quick-chevron">⌄</span>':''}</span>`:'';
-  let statusControl=st?(editable?quickSelect('Cambiar estado de '+t.title,status,t.task_type.statuses.map(v=>`<option value="${v.id}" ${v.id===t.status_id?'selected':''}>${esc(v.name)} · ${v.is_done?'Finalizado':'En curso'}</option>`).join(''),`quickUpdate(event,${t.id},'status')`):status):'';
+  let st=taskStatus(t), statusControl=st?statusButton(t,editable):'';
   let dateLabel=t.due_date?'◷ &nbsp;'+esc(t.due_date):'◷ &nbsp; Sin fecha';
   let dateControl=editable?`<span class="quick-control date-control" title="Cambiar fecha límite" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation()"><span class="date-value" aria-hidden="true">${dateLabel}</span><input type="date" aria-label="Cambiar fecha límite de ${esc(t.title)}" value="${esc(t.due_date||'')}" onpointerdown="event.stopPropagation()" onclick="event.stopPropagation();if(typeof this.showPicker==='function'){try{this.showPicker();event.preventDefault()}catch(e){}}" onchange="quickUpdate(event,${t.id},'due_date')"></span>`:`<span class="date-value">${dateLabel}</span>`;
   let person=u?avatar(u.name):'<span class="avatar empty-avatar">＋</span>';
@@ -247,9 +289,9 @@ function renderTaskProperties(t,editable){
     ['due_date','Fecha límite',`<input name="due_date" type="date" aria-label="Fecha límite" value="${esc(t.due_date||'')}" ${change('due_date')} ${disabled} onclick="if(typeof this.showPicker==='function'){try{this.showPicker();event.preventDefault()}catch(e){}}">`],
     ['priority','Prioridad',`<select name="priority" aria-label="Prioridad" ${change('priority')} ${disabled}>${['Baja','Normal','Alta'].map(v=>`<option ${t.priority===v?'selected':''}>${v}</option>`).join('')}</select>`],
     ['type','Tipo de tarea',`<select id="taskTypeSelect" aria-label="Tipo de tarea" ${change('type')} ${disabled}>${taskTypeOptions(t).map(type=>`<option value="${type.id}" ${type.id===t.type_id?'selected':''}>${esc(taskTypeLabel(type,t))}</option>`).join('')}</select>`],
-    ['status','Estado',`<select id="taskStatusSelect" aria-label="Estado" ${change('status')} ${disabled}>${t.task_type.statuses.map(st=>`<option value="${st.id}" ${st.id===t.status_id?'selected':''}>${esc(st.name)} · ${st.is_done?'Finalizado':'En curso'}</option>`).join('')}</select>`]
+    ['status','Estado',`<input type="hidden" id="taskStatusSelect" value="${t.status_id}">`]
   ];
-  return `<div class="task-properties">${fields.map(([field,label,input])=>`<div class="task-property" data-property="${field}"><span class="task-property-label">${label}</span><span class="quick-control detail-control ${editable?'':'read-only'}">${visual(field)}${input}</span></div>`).join('')}</div>`;
+  return `<div class="task-properties">${fields.map(([field,label,input])=>`<div class="task-property" data-property="${field}"><span class="task-property-label">${label}</span>${field==='status'?`${statusButton(t,editable,true)}${input}`:`<span class="quick-control detail-control ${editable?'':'read-only'}">${visual(field)}${input}</span>`}</div>`).join('')}</div>`;
 }
 function updateTaskPropertyVisuals(form,task){for(let field of ['assignee_id','due_date','priority','type','status']){let value=form.querySelector(`[data-property="${field}"] .detail-value`);if(value)value.innerHTML=taskPropertyVisual(field,task,true)}}
 async function openTask(id,tab=null){if(taskDraft&&!await flushTaskDraft())return;if(taskDraft){clearTimeout(taskDraft.timer);taskDraft=null}if(tab)taskTab=tab;else if(taskId!==id)taskTab='detalle';taskId=id;let t=data.tasks.find(x=>x.id===id), history, comments;try{[history,comments]=await Promise.all([api('history/'+id),api('comments/'+id)])}catch(e){return toast(e.message)}let project=data.projects.find(p=>p.id===active),editable=t.can_edit&&(!project||project.role!=='viewer');let parent=data.tasks.find(x=>x.id===t.parent_id);let subs=data.tasks.filter(x=>x.parent_id===id);modal(`<div class="dialog-head"><div class="eyebrow">DETALLE DE LA TAREA &nbsp; / &nbsp; #${t.id}</div><div class="task-head-actions">${editable?`<button type="button" class="task-link-button task-remove-icon" data-tooltip="Eliminar tarea" aria-label="Eliminar tarea" onclick="confirmDeleteTask(${id})"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 4h4M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button>`:''}<button type="button" class="task-link-button" data-tooltip="Copiar link" aria-label="Copiar link" onclick="copyTaskLink(${t.id})"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1 0l2.1-2.1a5 5 0 0 0-7.1-7.1L11 5"/><path d="M14 11a5 5 0 0 0-7.1 0L4.8 13.1a5 5 0 0 0 7.1 7.1L13 19"/></svg></button><button type="button" aria-label="Cerrar" onclick="closeModal()">×</button></div></div>${parent?`<button type="button" class="parent-task-link" onclick="openTask(${parent.id},'detalle')">← Tarea principal: ${esc(parent.title)}</button>`:''}<form id="taskForm"><input class="task-title" name="title" value="${esc(t.title)}" ${editable?'':'disabled'} required>${renderTaskProperties(t,editable)}</form><div class="detail-section"><div class="project-section-head"><h3>Proyectos</h3>${editable?`<span class="quick-control project-add-control"><span aria-hidden="true">＋ Agregar a un proyecto <span class="quick-chevron">⌄</span></span><select class="project-select" aria-label="Agregar a un proyecto" onchange="if(this.value)taskProject(${id},+this.value,false)"><option value="">Agregar a un proyecto</option>${data.projects.filter(p=>p.role!=='viewer'&&!t.placements.some(x=>x.project_id===p.id)).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></span>`:''}</div><div class="chips">${t.placements.map(x=>{let p=data.projects.find(p=>p.id===x.project_id);return p?`<span class="chip"><i style="background:${esc(p.color)}"></i>${esc(p.name)} ${editable&&p.role!=='viewer'?`<button onclick="taskProject(${id},${p.id},true)" title="Quitar del proyecto">×</button>`:''}</span>`:''}).join('')+(t.inherited_project_ids||[]).map(projectId=>{let p=data.projects.find(p=>p.id===projectId);return p?`<span class="chip" title="Heredado de la tarea principal"><i style="background:${esc(p.color)}"></i>${esc(p.name)} · heredado</span>`:''}).join('')||'<span class="muted">Sin proyecto</span>'}</div></div>${editable?'<div id="taskSaveStatus" class="task-save-status" role="status" aria-live="polite"></div>':''}<div class="task-tabs" role="tablist" aria-label="Secciones de la tarea" onkeydown="taskTabKeydown(event)"><button type="button" role="tab" id="task-tab-detalle" aria-controls="task-panel-detalle" onclick="setTaskTab('detalle')">Detalle</button><button type="button" role="tab" id="task-tab-subtareas" aria-controls="task-panel-subtareas" onclick="setTaskTab('subtareas')">Subtareas (${subs.length})</button><button type="button" role="tab" id="task-tab-comentarios" aria-controls="task-panel-comentarios" onclick="setTaskTab('comentarios')">Comentarios (${comments.length})</button><button type="button" role="tab" id="task-tab-actividad" aria-controls="task-panel-actividad" onclick="setTaskTab('actividad')">Actividad</button></div><section id="task-panel-detalle" role="tabpanel" aria-labelledby="task-tab-detalle"><div class="description-field"><label id="descriptionLabel">Descripción</label>${editable?`<div class="editor-toolbar" role="toolbar" aria-label="Formato de descripción"><button type="button" title="Negrita" aria-label="Negrita" onmousedown="event.preventDefault()" onclick="formatDescription('bold')"><b>N</b></button><button type="button" title="Cursiva" aria-label="Cursiva" onmousedown="event.preventDefault()" onclick="formatDescription('italic')"><i>C</i></button><button type="button" title="Lista con viñetas" aria-label="Lista con viñetas" onmousedown="event.preventDefault()" onclick="formatDescription('insertUnorderedList')">☷</button><button type="button" title="Lista numerada" aria-label="Lista numerada" onmousedown="event.preventDefault()" onclick="formatDescription('insertOrderedList')">1.</button><button type="button" title="Insertar enlace" aria-label="Insertar enlace" onmousedown="event.preventDefault()" onclick="addDescriptionLink()">↗</button></div>`:''}<div id="descriptionEditor" class="description-editor ${editable?'':'read-only'}" role="textbox" aria-labelledby="descriptionLabel" aria-multiline="true" contenteditable="${editable}" data-placeholder="Agrega más detalles sobre esta tarea...">${t.description_format==='html'?t.description:esc(t.description).replace(/\n/g,'<br>')}</div></div></section><section id="task-panel-subtareas" role="tabpanel" aria-labelledby="task-tab-subtareas"><div class="detail-section"><h3>Subtareas</h3><div id="subtaskList">${renderSubtasks(subs)}</div>${editable?`<button type="button" id="addSubtask" class="text-button" onclick="newSubtask()">＋ Agregar subtarea</button><form id="subtaskForm" class="subtask-form" hidden><input name="title" aria-label="Nombre de la subtarea" placeholder="Nombre de la subtarea" required><button type="submit" class="primary">Crear</button></form>`:''}</div></section><section id="task-panel-comentarios" role="tabpanel" aria-labelledby="task-tab-comentarios"><div class="detail-section"><h3>Comentarios</h3><div id="commentsList">${renderComments(comments,editable)}</div>${editable?`<form id="commentForm"><label>Nuevo comentario<textarea name="body" rows="3" maxlength="10000" required placeholder="Escribe un comentario..."></textarea></label><button class="primary">Comentar</button></form>`:'<p class="muted">Tienes acceso de solo lectura.</p>'}</div></section><section id="task-panel-actividad" role="tabpanel" aria-labelledby="task-tab-actividad"><div class="detail-section"><h3>Actividad</h3><div id="activityList">${history.map(h=>`<div class="activity">${avatar(h.actor)}<div><strong>${esc(h.actor)}</strong> ${esc(h.message)}<small>${new Date(h.created_at).toLocaleString('es-CL',{dateStyle:'medium',timeStyle:'short'})}</small></div></div>`).join('')}</div></div></section>`,true);setTaskTab(taskTab);if(editable){setupSubtaskForm(id);$('#descriptionEditor').addEventListener('paste',pasteDescription);$('#commentForm').onsubmit=async e=>{e.preventDefault();let form=e.target;try{await api('comments',{task_id:id,body:form.elements.body.value});form.reset();let task=data.tasks.find(t=>t.id===id);if(task){task.comment_count=(task.comment_count||0)+1;$('#task-tab-comentarios').textContent=`Comentarios (${task.comment_count})`;renderBoard()}$('#commentsList').innerHTML=renderComments(await api('comments/'+id),editable);toast('Comentario agregado')}catch(err){toast(err.message)}};setupTaskAutosave(id,t)}}
@@ -307,7 +349,7 @@ function taskTypeLabel(type,t){let options=taskTypeOptions(t),project=data.proje
 async function saveTaskField(id,field,control){
   let task=data.tasks.find(t=>t.id===id);if(!task)return;
   let original=String(field==='type'?task.type_id:field==='status'?task.status_id:task[field]??''),value=control.value;
-  let form=control.form,controls=[...form.querySelectorAll('.task-properties select,.task-properties input')];
+  let form=control.form,controls=[...form.querySelectorAll('.task-properties select,.task-properties input,.task-properties .status-trigger')];
   controls.forEach(item=>item.disabled=true);
   let draft=field==='assignee_id'?taskDraft:null;
   if(draft){draft.title.readOnly=true;draft.editor.contentEditable='false'}
@@ -324,8 +366,8 @@ async function saveTaskField(id,field,control){
     if(!form.isConnected)return;
     if(field==='type'){
       form.querySelector('#taskTypeSelect').innerHTML=taskTypeOptions(updated).map(type=>`<option value="${type.id}" ${type.id===updated.type_id?'selected':''}>${esc(taskTypeLabel(type,updated))}</option>`).join('');
-      form.querySelector('#taskStatusSelect').innerHTML=updated.task_type.statuses.map(st=>`<option value="${st.id}" ${st.id===updated.status_id?'selected':''}>${esc(st.name)} · ${st.is_done?'Finalizado':'En curso'}</option>`).join('');
     }
+    form.querySelector('#taskStatusSelect').value=String(updated.status_id);
     updateTaskPropertyVisuals(form,updated);
     unlock();
     try{await updateActivity(id)}catch{}
