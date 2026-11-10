@@ -399,6 +399,32 @@ class TaskTypesTest(unittest.TestCase):
             self.assertTrue(app.can_task(c,viewer,sub))
             self.assertFalse(app.can_task(c,viewer,sub,True))
 
+    def test_subtasks_inherit_projects_dynamically_and_enforce_access(self):
+        with app.db() as c:
+            c.execute("INSERT INTO users(id,name,username,password,salt,admin) VALUES(4,'Responsable','responsable','','',0)")
+        parent=self.post('tasks',{'title':'Principal','project_id':1,'column_id':1})[1]['id']
+        child=self.post('tasks',{'title':'Hija','parent_id':parent})[1]['id']
+        grandchild=self.post('tasks',{'title':'Nieta','parent_id':child})[1]['id']
+        self.post('task/update',{'id':child,'assignee_id':4})
+        def data_for(user):
+            handler=app.Handler.__new__(app.Handler);handler.path='/api/data'
+            handler.user=lambda c:c.execute('SELECT id,name,username,admin FROM users WHERE id=?',(user,)).fetchone()
+            result=[];handler.respond=lambda data,status=200:result.append((status,data));handler.do_GET()
+            return {t['id']:t for t in result[0][1]['tasks']}
+        self.assertNotIn(child,data_for(4))
+        visible=data_for(3)
+        self.assertEqual(visible[child]['inherited_project_ids'],[1]);self.assertTrue(visible[child]['has_projects'])
+        self.assertEqual(visible[grandchild]['inherited_project_ids'],[1]);self.assertEqual(visible[child]['placements'],[])
+        self.post('task/project',{'id':parent,'project_id':2})
+        self.assertEqual(data_for(1)[child]['inherited_project_ids'],[1,2])
+        self.assertEqual(data_for(3)[child]['inherited_project_ids'],[1])
+        self.post('task/project',{'id':parent,'project_id':1,'remove':True})
+        self.assertNotIn(child,data_for(3));self.assertEqual(data_for(1)[grandchild]['inherited_project_ids'],[2])
+        self.post('task/project',{'id':parent,'project_id':2,'remove':True})
+        self.assertFalse(data_for(4)[child]['has_projects'])
+        self.assertEqual(self.post('task/delete',{'id':parent})[0],200)
+        self.assertIsNone(data_for(4)[child]['parent_id'])
+
     def test_public_task_ids_migrate_and_remain_private(self):
         visible=self.post('tasks',{'title':'Visible','project_id':1,'column_id':1},user=2)[1]['id']
         private=self.post('tasks',{'title':'Privada','project_id':2,'column_id':2})[1]['id']

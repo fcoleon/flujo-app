@@ -7,10 +7,12 @@ from http.cookies import SimpleCookie
 from urllib.parse import urlparse, parse_qs
 from html.parser import HTMLParser
 from html import escape
+from settings import load_settings
 
-DB = os.environ.get('TASKS_DB', 'tasks.db')
-PORT = int(os.environ.get('PORT', '8000'))
-STATS_ZONE = ZoneInfo(os.environ.get('TASKS_TIMEZONE', 'America/Santiago'))
+SETTINGS = load_settings()
+DB = SETTINGS['database']
+PORT = SETTINGS['port']
+STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
 
 def db():
     c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
@@ -173,16 +175,18 @@ def record(c,tid,uid,msg): c.execute('INSERT INTO history(task_id,user_id,messag
 def role(c,u,p):
     if u['admin']: return 'admin'
     r=c.execute('SELECT role FROM members WHERE project_id=? AND user_id=?',(p,u['id'])).fetchone(); return r['role'] if r else None
+def task_projects(c,tid):
+    return {r['project_id'] for r in c.execute('''WITH RECURSIVE ancestors(id) AS (
+        SELECT ? UNION SELECT t.parent_id FROM tasks t JOIN ancestors a ON t.id=a.id WHERE t.parent_id IS NOT NULL
+    ) SELECT DISTINCT p.project_id FROM placements p JOIN ancestors a ON p.task_id=a.id''',(tid,))}
 def can_task(c,u,tid,write=False):
     task=c.execute('SELECT parent_id,assignee_id FROM tasks WHERE id=?',(tid,)).fetchone()
     if not task: return False
     if u['admin']: return True
-    # Project membership governs project tasks even when the user is assigned.
-    # Projectless tasks are accessible to their assignee; projectless subtasks
-    # also inherit access from their parent.
-    rows=c.execute('SELECT project_id FROM placements WHERE task_id=?',(tid,)).fetchall()
-    if rows:
-        return any(role(c,u,r['project_id']) in (('admin','editor') if write else ('admin','editor','viewer')) for r in rows)
+    # Project membership includes inherited projects and takes precedence over assignment.
+    projects=task_projects(c,tid)
+    if projects:
+        return any(role(c,u,p) in (('admin','editor') if write else ('admin','editor','viewer')) for p in projects)
     if task['assignee_id']==u['id']: return True
     return bool(task['parent_id'] and can_task(c,u,task['parent_id'],write))
 
@@ -227,7 +231,8 @@ class Handler(BaseHTTPRequestHandler):
                                           ORDER BY t.id DESC''').fetchall():
                         placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
                         if can_task(c,u,t['id']):
-                            d=dict(t); d['placements']=placements; d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(c.execute('SELECT 1 FROM placements WHERE task_id=?',(t['id'],)).fetchone()); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None; tasks.append(d)
+                            projects_for_task=task_projects(c,t['id']); explicit={r['project_id'] for r in c.execute('SELECT project_id FROM placements WHERE task_id=?',(t['id'],))}
+                            d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None; tasks.append(d)
                     return self.respond({'user':dict(u),'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
                 if path=='/api/analytics':
                     params=parse_qs(urlparse(self.path).query); p=int(params['project_id'][0]); month=params['month'][0]
