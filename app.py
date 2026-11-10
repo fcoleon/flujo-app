@@ -492,6 +492,19 @@ def api_post():
                 if not body: raise ValueError('Escribe un comentario')
                 if len(body)>10000: raise ValueError('El comentario es demasiado largo')
                 c.execute('INSERT INTO comments(task_id,user_id,body,created_at) VALUES(?,?,?,?)',(tid,u['id'],body,now()))
+            elif path=='/api/comments/update':
+                comment=c.execute('SELECT id,task_id,user_id,body FROM comments WHERE id=?',(int(b['id']),)).fetchone()
+                if not comment: return respond({'error':'Comentario no encontrado'},404)
+                if comment['user_id']!=u['id'] or not can_task(c,u,comment['task_id'],True):
+                    raise PermissionError('Sin permiso para editar este comentario')
+                body=b.get('body')
+                if not isinstance(body,str) or not body.strip(): raise ValueError('Escribe un comentario')
+                body=body.strip()
+                if len(body)>10000: raise ValueError('El comentario es demasiado largo')
+                if body!=comment['body']:
+                    c.execute('UPDATE comments SET body=? WHERE id=?',(body,comment['id']))
+                    record(c,comment['task_id'],u['id'],'editó un comentario')
+                return respond({'ok':True,'body':body})
             elif path=='/api/task/delete':
                 tid=int(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')

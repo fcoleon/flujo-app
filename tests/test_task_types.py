@@ -48,6 +48,29 @@ class TaskTypesTest(unittest.TestCase):
         response=self.client_for(user).get('/api/'+path)
         return response.status_code,response.get_json()
 
+    def test_edit_comment_requires_author_and_task_edit_permission(self):
+        task=self.post('tasks',{'title':'Tarea','project_id':1,'column_id':1})[1]['id']
+        self.assertEqual(self.post('comments',{'task_id':task,'body':'Original'},user=2)[0],200)
+        comment=self.get(f'comments/{task}',user=2)[1][0]
+        cid=comment['id']
+        self.assertEqual(self.post('comments/update',{'id':cid,'body':'Admin'},user=1)[0],403)
+        self.assertEqual(self.post('comments/update',{'id':cid,'body':'Lector'},user=3)[0],403)
+        self.assertEqual(self.post('comments/update',{'id':99999,'body':'Ausente'},user=2)[0],404)
+        for body in (' ', 'x'*10001, None):
+            self.assertEqual(self.post('comments/update',{'id':cid,'body':body},user=2)[0],400)
+        status,result=self.post('comments/update',{'id':cid,'body':'  Actualizado\ncon dos líneas  '},user=2)
+        self.assertEqual(status,200);self.assertEqual(result['body'],'Actualizado\ncon dos líneas')
+        updated=self.get(f'comments/{task}',user=2)[1]
+        self.assertEqual(len(updated),1);self.assertEqual(updated[0]['body'],result['body'])
+        self.assertEqual(updated[0]['created_at'],comment['created_at'])
+        history=self.get(f'history/{task}',user=2)[1]
+        self.assertEqual(sum(h['message']=='editó un comentario' for h in history),1)
+        self.assertEqual(self.post('comments/update',{'id':cid,'body':result['body']},user=2)[0],200)
+        with app.db() as c: c.execute("UPDATE members SET role='viewer' WHERE project_id=1 AND user_id=2")
+        self.assertEqual(self.post('comments/update',{'id':cid,'body':'Sin permiso'},user=2)[0],403)
+        self.assertEqual(self.get(f'comments/{task}',user=2)[1][0]['body'],result['body'])
+        self.assertEqual(sum(h['message']=='editó un comentario' for h in self.get(f'history/{task}',user=2)[1]),1)
+
     def test_types_state_reset_permissions_and_history(self):
         status, res = self.post('task-types', {'project_id': 1, 'name': 'Incidencia'})
         self.assertEqual(status, 200); typ=res['id']
