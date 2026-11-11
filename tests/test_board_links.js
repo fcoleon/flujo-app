@@ -3,7 +3,7 @@ const source=require('fs').readFileSync('static/app.js','utf8');
 const uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', other='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 let data={projects:[{id:1,public_id:uuid},{id:2,public_id:other}],tasks:[]},active=1,filter='',boardView='board',statsType='',taskId=null;
 let location={pathname:'/',search:'',origin:'https://example.test'},pop;
-const history={pushState(a,b,path){setPath(path)},replaceState(a,b,path){setPath(path)}};
+const history={state:null,pushState(a,b,path){this.state=a;setPath(path)},replaceState(a,b,path){this.state=a;setPath(path)}};
 function setPath(path){let parts=path.split('?');location.pathname=parts[0];location.search=parts[1]?'?'+parts[1]:''}
 const window={addEventListener(name,fn){if(name==='popstate')pop=fn}};
 class URLSearchParams{constructor(s=''){this.items={};if(s)for(let pair of s.replace(/^\?/,'').split('&')){let [k,v]=pair.split('=');this.items[k]=v}}set(k,v){this.items[k]=v}get(k){return this.items[k]||null}toString(){return Object.entries(this.items).map(([k,v])=>k+'='+v).join('&')}}
@@ -17,6 +17,8 @@ eval(source.slice(source.indexOf('let currentRoute='),source.indexOf('function s
   let task={id:9,public_id:uuid,has_projects:true,placements:[{project_id:1},{project_id:2}]};
   data.tasks=[task];active=2;
   assert(taskLink(task)==='https://example.test/board/'+other+'/task/'+uuid,'enlace con UUID');
+  selectProject('mine');assert(location.pathname==='/my-tasks','ruta de mis tareas');
+  setTaskUrl(task);assert(history.state.returnTo==='mine','conserva el origen de la tarea en el historial');
   setPath('/board/'+uuid);openDeepLink().then(()=>{
     assert(active===1,'apertura directa');
     setPath('/t/'+uuid+'?project=2');return openDeepLink();

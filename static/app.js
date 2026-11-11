@@ -27,11 +27,18 @@ function setupTaskTitle(input,task){
     resize();
   });resize();
 }
+function collapseActivity(list){
+  let items=[...list.querySelectorAll(':scope > .activity')];if(items.length<8||list.dataset.expanded==='true')return;
+  let hidden=items.slice(4,-1),button=document.createElement('button');button.type='button';button.className='text-button activity-show-previous';button.textContent=`Mostrar ${hidden.length} actualizaciones previas`;
+  hidden.forEach(item=>item.hidden=true);hidden[0].before(button);
+  button.onclick=()=>{hidden.forEach(item=>item.hidden=false);list.dataset.expanded='true';hidden[0].tabIndex=-1;hidden[0].focus({preventScroll:true});button.remove()};
+}
 function modal(html,wide=false){
   closeStatusMenu();
   const container=$('#modal'),replacing=!!container.querySelector('.overlay');
   container.innerHTML=`<div class="overlay${replacing?'':' modal-appear'}"><div class="dialog${wide?' task-dialog':''}">${html}</div></div>`;
   let title=container.querySelector('input.task-title'),task=data?.tasks.find(t=>t.id===taskId);if(title&&task)setupTaskTitle(title,task);
+  let activity=container.querySelector('#activityList');if(activity)collapseActivity(activity);
   if(container.querySelector('#taskForm')){let task=data?.tasks.find(t=>t.id===taskId);if(task?.public_id)setTaskUrl(task,openingDeepLink)}
   const overlay=$('#modal .overlay');let startedOnOverlay=false,endedOnOverlay=false;
   overlay.addEventListener('pointerdown',e=>{startedOnOverlay=e.isPrimary&&e.button===0&&e.target===overlay},true);
@@ -65,7 +72,7 @@ function normalizeSearch(value){return String(value??'').normalize('NFD').replac
 function matchesSearch(t,query){let q=normalizeSearch(query);return !q||normalizeSearch(t.title).includes(q)||normalizeSearch(descriptionText(t)).includes(q)}
 function avatar(name){return `<span class="avatar">${esc((name||'?').split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase())}</span>`}
 function icon(name){return ({grid:'▦',home:'⌂',tasks:'☷',people:'♧',plus:'＋',search:'⌕',more:'···'})[name]||name}
-async function refresh(){let previous=active;data=await api('data');if(active!==0&&!data.projects.some(p=>p.id===active))active=data.projects[0]?.id??(data.tasks.some(t=>!t.has_projects&&!t.parent_id)?0:null);if(previous!==null&&previous!==active&&location.pathname.startsWith('/board/')){let task=data.tasks.find(t=>t.id===taskId);if(task&&isTaskPath(location.pathname))setTaskUrl(task,true);else setBoardUrl(active,true)}render()}
+async function refresh(){let previous=active;data=await api('data');if(active!==0&&active!=='mine'&&!data.projects.some(p=>p.id===active))active=data.projects[0]?.id??(data.tasks.some(t=>!t.has_projects&&!t.parent_id)?0:null);if(previous!==null&&previous!==active&&location.pathname.startsWith('/board/')){let task=data.tasks.find(t=>t.id===taskId);if(task&&isTaskPath(location.pathname))setTaskUrl(task,true);else setBoardUrl(active,true)}render()}
 async function start(){try{let s=await api('session');if(!s.user)return auth(s.needs_setup,s.allow_self_registration);if(s.blocked)return showBlocked();if(s.must_change_password)return showPasswordChange();await refresh();await openDeepLink()}catch(e){toast(e.message)}}
 function auth(setup,allowSignup=false,signup=false){
   let creating=setup||signup;
@@ -82,7 +89,7 @@ function sidebarCollapsed(){try{let value=localStorage.getItem('flujo:sidebar:'+
 function toggleSidebar(){let sidebar=$('#mainSidebar'),button=$('#sidebarToggle'),collapsed=!sidebar.classList.contains('is-collapsed');sidebar.classList.toggle('is-collapsed',collapsed);button.setAttribute('aria-expanded',String(!collapsed));button.setAttribute('aria-label',collapsed?'Expandir menú':'Ocultar menú');button.dataset.tooltip=collapsed?'Expandir menú':'Ocultar menú';button.textContent=collapsed?'›':'‹';try{localStorage.setItem('flujo:sidebar:'+data.user.id,collapsed?'collapsed':'expanded')}catch{}}
 function render(){saveBoardScroll();let p=data.projects.find(x=>x.id===active), orphan=active===0, writable=p&&p.role!=='viewer';let tasks=orphan?data.tasks.filter(t=>!t.has_projects&&!t.parent_id):data.tasks.filter(t=>t.placements.some(x=>x.project_id===active));let count=tasks.length;$('#app').innerHTML=`<div class="shell"><aside id="mainSidebar" class="sidebar ${sidebarCollapsed()?'is-collapsed':''}"><div class="sidebar-top"><div class="brand"><span class="brandmark">✳</span> flujo<span class="brand-dot">.</span></div><button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="mainSidebar" aria-expanded="${!sidebarCollapsed()}" aria-label="${sidebarCollapsed()?'Expandir menú':'Ocultar menú'}" data-tooltip="${sidebarCollapsed()?'Expandir menú':'Ocultar menú'}" onclick="toggleSidebar()">${sidebarCollapsed()?'›':'‹'}</button></div><button type="button" class="workspace" onclick="workspaceSettings()" aria-label="Configurar workspace" data-tooltip="${esc(data.workspace_name)}"><span class="workspace-icon">${esc(data.workspace_name.charAt(0).toUpperCase())}</span><span class="workspace-label"><strong>${esc(data.workspace_name)}</strong><small>Espacio de trabajo</small></span><span class="chevron">⌄</span></button><div class="nav-caption">WORKSPACE</div><button class="nav-item ${orphan?'selected':''}" onclick="selectProject(0)" aria-label="Sin proyecto" data-tooltip="Sin proyecto"><span>${icon('tasks')}</span><span class="nav-label">Sin proyecto</span><em>${data.tasks.filter(t=>!t.has_projects&&!t.parent_id).length}</em></button><div class="nav-caption project-caption">PROYECTOS ${data.user.admin?'<button class="create-project-control" onclick="newProject()" aria-label="Crear proyecto" data-tooltip="Crear proyecto">＋</button>':''}</div>${data.user.admin?'<button class="sidebar-add-project create-project-control" onclick="newProject()" aria-label="Crear proyecto" data-tooltip="Crear proyecto">＋</button>':''}<div class="project-list">${data.projects.map(x=>`<button class="nav-item ${active===x.id?'selected':''}" aria-label="${esc(x.name)}" data-tooltip="${esc(x.name)}" onclick="selectProject(${x.id})"><i style="background:${esc(x.color)}"></i><span class="project-name">${esc(x.name)}</span></button>`).join('')||'<div class="empty-nav">Aún no hay proyectos</div>'}</div><div class="sidebar-bottom"><div class="profile"><button type="button" class="profile-control" onclick="editProfile()" aria-label="Mi perfil" data-tooltip="Mi perfil">${avatar(data.user.name)}<span class="profile-info"><strong>${esc(data.user.name)}</strong><small>${data.user.admin?'Admin del workspace':'Miembro'}</small></span></button><button class="logout-control" aria-label="Cerrar sesión" data-tooltip="Cerrar sesión" onclick="logout()">↪</button></div></div></aside><main class="${p?'board-main':''}"><header class="topbar"><div class="breadcrumb">${esc(data.workspace_name)} <span>/</span> <strong>${esc(orphan?'Sin proyecto':p?.name||'Inicio')}</strong></div><div class="top-actions">${(p||orphan)&&boardView==='board'?`<label class="search top-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Buscar tareas del tablero por nombre o descripción" placeholder="Buscar en este tablero" value="${esc(filter)}" oninput="filter=this.value; renderBoard()"></label>`:''}<span class="today">${new Intl.DateTimeFormat('es-CL',{day:'numeric',month:'long',year:'numeric'}).format(new Date())}</span>${avatar(data.user.name)}</div></header>${!p&&!orphan?`<div class="welcome"><div class="eyebrow">TU ESPACIO DE TRABAJO</div><h1>Todo empieza con un proyecto.</h1><p>Reúne las tareas y a tu equipo en un solo lugar.</p>${data.user.admin?'<button class="primary" onclick="newProject()">＋ Crear proyecto</button>':''}</div>`:`<section class="content ${p?(boardView==='board'?'board-layout':'stats-layout'):''}"><div class="project-heading"><div class="project-heading-main"><div class="project-title-row"><h1>${orphan?'Sin proyecto':esc(p.name)}${p?.role==='admin'?` <button class="project-settings-trigger" type="button" aria-label="Editar tablero" data-tooltip="Editar tablero" onclick="editProject()">⚙</button>`:''}</h1>${p?.role==='viewer'?`<span class="board-readonly"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Solo tienes acceso para ver este board, no puedes editar, crear ni borrar.</span></span>`:''}</div><p>${orphan?'Tareas que aún no pertenecen a un proyecto.':esc(p.description||'')}</p></div><div class="heading-actions">${orphan&&data.user.admin?'<button class="primary" onclick="newOrphan()">＋ &nbsp; Nueva tarea</button>':''}${p?`<div class="member-stack">${p.members.slice(0,3).map(m=>avatar(m.name)).join('')}</div>${writable?'<button class="primary" onclick="newTask()">＋ &nbsp; Nueva tarea</button>':''}`:''}</div></div><div class="tabs"><button class="tab ${boardView==='board'?'active':''}" onclick="setBoardView('board')">▦ &nbsp; Tablero</button>${p?.role==='admin'?`<button class="tab ${boardView==='stats'?'active':''}" onclick="setBoardView('stats')">▥ &nbsp; Estadísticas</button>`:''}${boardView==='board'?`<div class="tab-right"><span id="boardCount">${count} ${count===1?'tarea':'tareas'}</span></div>`:''}</div><div id="board" ${p&&boardView==='stats'?'tabindex="0" role="region" aria-label="Contenido de estadísticas"':''}></div></section>`}</main></div>`;if(p||orphan){if(boardView==='stats'&&p?.role==='admin')renderStats();else renderBoard()}}
 let currentRoute=location.pathname+location.search,openingDeepLink=false;
-function boardPath(id){return id===0?'/board/no-project':data.projects.find(p=>p.id===id)?.public_id?'/board/'+data.projects.find(p=>p.id===id).public_id:'/'}
+function boardPath(id){return id==='mine'?'/my-tasks':id===0?'/board/no-project':data.projects.find(p=>p.id===id)?.public_id?'/board/'+data.projects.find(p=>p.id===id).public_id:'/'}
 function setBoardUrl(id,replace=false){let url=boardPath(id);if(location.pathname+location.search!==url)history[replace?'replaceState':'pushState'](null,'',url);currentRoute=url}
 function isTaskPath(path){return /^\/t\//.test(path)||/^\/board\/[^/]+\/task\//.test(path)}
 function selectProject(id){active=id;filter='';boardView='board';statsType='';setBoardUrl(id);render()}
@@ -93,7 +100,7 @@ function taskContextProjects(task){
 }
 function taskPath(task){let projects=taskContextProjects(task),project=projects.includes(active)?active:(projects[0]??0);return boardPath(project)+'/task/'+task.public_id}
 function taskLink(task){return new URL(taskPath(task),location.origin).href}
-function setTaskUrl(task,replace=false){let url=taskPath(task),sameTask=isTaskPath(location.pathname)&&location.pathname.toLowerCase().endsWith('/'+task.public_id.toLowerCase());if(location.pathname+location.search!==url)history[replace||sameTask?'replaceState':'pushState'](null,'',url);currentRoute=url}
+function setTaskUrl(task,replace=false){let url=taskPath(task),sameTask=isTaskPath(location.pathname)&&location.pathname.toLowerCase().endsWith('/'+task.public_id.toLowerCase());if(location.pathname+location.search!==url)history[replace||sameTask?'replaceState':'pushState'](active==='mine'?{returnTo:'mine'}:null,'',url);currentRoute=url}
 async function copyTaskLink(id){
   let task=data.tasks.find(t=>t.id===id);if(!task?.public_id)return toast('El enlace no está disponible');let url=taskLink(task);
   try{if(!navigator.clipboard?.writeText)throw Error('Portapapeles no disponible');await navigator.clipboard.writeText(url)}
@@ -102,6 +109,7 @@ async function copyTaskLink(id){
 }
 async function openDeepLink(){
   if(location.pathname==='/'){setBoardUrl(active,true);render();return}
+  if(location.pathname==='/my-tasks'){active='mine';boardView='board';render();currentRoute=location.pathname+location.search;return}
   let taskMatch=location.pathname.match(/^\/board\/([^/]+)\/task\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
   let legacyMatch=location.pathname.match(/^\/t\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
   if(taskMatch||legacyMatch){
@@ -110,7 +118,7 @@ async function openDeepLink(){
     let projects=taskContextProjects(task),raw=taskMatch?taskMatch[1]:new URLSearchParams(location.search).get('project');
     let requested=raw==='no-project'?0:raw&&/^\d+$/.test(raw)?Number(raw):data.projects.find(p=>p.public_id?.toLowerCase()===raw?.toLowerCase())?.id;
     let valid=requested===0?!task.has_projects:requested!=null&&projects.includes(requested);
-    active=valid?requested:(projects[0]??0);boardView='board';filter='';render();
+    active=history.state?.returnTo==='mine'?'mine':valid?requested:(projects[0]??0);boardView='board';filter='';render();
     openingDeepLink=true;try{await openTask(task.id)}finally{openingDeepLink=false}
     if(raw&&!valid)toast('El tablero del enlace no está disponible; se abrió la tarea en una vista accesible');
     currentRoute=location.pathname+location.search;return;
@@ -630,7 +638,7 @@ function removeStatus(index){let status=typeDraft.statuses[index];if(!status||ty
 function moveStatus(index,direction){let to=index+direction;if(to<0||to>=typeDraft.statuses.length)return;let [item]=typeDraft.statuses.splice(index,1);typeDraft.statuses.splice(to,0,item);renderTypeEditor()}
 function dropStatus(e,index){e.preventDefault();e.stopPropagation();if(statusDrag===null||statusDrag===index)return;let [item]=typeDraft.statuses.splice(statusDrag,1);typeDraft.statuses.splice(index,0,item);statusDrag=null;renderTypeEditor()}
 
-async function updateActivity(id){let list=$('#activityList');if(!list)return;let history=await api('history/'+id);if(!list.isConnected)return;list.innerHTML=history.map(h=>`<div class="activity">${avatar(h.actor)}<div><strong>${esc(h.actor)}</strong> ${esc(h.message)}<small>${new Date(h.created_at).toLocaleString('es-CL',{dateStyle:'medium',timeStyle:'short'})}</small></div></div>`).join('')}
+async function updateActivity(id){let list=$('#activityList');if(!list)return;let history=await api('history/'+id);if(!list.isConnected)return;list.innerHTML=history.map(h=>`<div class="activity">${avatar(h.actor)}<div><strong>${esc(h.actor)}</strong> ${esc(h.message)}<small>${new Date(h.created_at).toLocaleString('es-CL',{dateStyle:'medium',timeStyle:'short'})}</small></div></div>`).join('');collapseActivity(list)}
 
 function renderComments(comments,editable=false){return comments.map(c=>`<div class="comment">${avatar(c.author)}<div class="comment-content"><div class="comment-heading"><span><strong>${esc(c.author)}</strong> <small>${new Date(c.created_at).toLocaleString('es-CL',{dateStyle:'medium',timeStyle:'short'})}</small></span>${editable&&c.user_id===data.user.id?`<button type="button" class="comment-edit-button" onclick="editComment(this,${c.id})">Editar</button>`:''}</div><p class="comment-body">${esc(c.body)}</p></div></div>`).join('')||'<p class="muted">Aún no hay comentarios.</p>'}
 function editComment(button,id){
@@ -652,7 +660,7 @@ function formatDescription(command,value=null){$('#descriptionEditor').focus();d
 function addDescriptionLink(){let url=prompt('Dirección del enlace (https://, http:// o mailto:)');if(!url)return;try{let parsed=new URL(url);if(!['https:','http:','mailto:'].includes(parsed.protocol))throw Error();formatDescription('createLink',url)}catch(e){toast('Ingresa una dirección válida que comience con https://, http:// o mailto:')}}
 function pasteDescription(e){e.preventDefault();document.execCommand('insertText',false,e.clipboardData.getData('text/plain'))}
 
-async function taskProject(id,p,remove){if(taskDraft&&!await flushTaskDraft())return;try{await api('task/project',{id,project_id:p,remove});await refresh();let task=data.tasks.find(t=>t.id===id);if(task){if(!task.has_projects){active=0;boardView='board';filter='';if(!isTaskPath(location.pathname))setBoardUrl(0,true);render()}await openTask(id)}else{closeModal();toast('La tarea ya no está disponible para tu usuario')}}catch(e){toast(e.message)}}
+async function taskProject(id,p,remove){if(taskDraft&&!await flushTaskDraft())return;try{await api('task/project',{id,project_id:p,remove});await refresh();let task=data.tasks.find(t=>t.id===id);if(task){if(!task.has_projects&&active!=='mine'){active=0;boardView='board';filter='';if(!isTaskPath(location.pathname))setBoardUrl(0,true);render()}await openTask(id)}else{closeModal();toast('La tarea ya no está disponible para tu usuario')}}catch(e){toast(e.message)}}
 function renderSubtasks(subs){return subs.map(s=>`<button type="button" class="subtask" onclick="openTask(${s.id})">◯ &nbsp; ${esc(s.title)} <span>→</span></button>`).join('')||'<p class="muted">Aún no hay subtareas.</p>'}
 function newSubtask(){let form=$('#subtaskForm');if(!form)return;$('#addSubtask').hidden=true;form.hidden=false;form.elements.title.focus()}
 function setupSubtaskForm(id){
@@ -728,9 +736,32 @@ async function reloadAutomations(){let project=automationProject,dialog=$('#moda
 async function moveAutomation(i,delta){let order=automationRules.map(r=>r.id),j=i+delta;if(j<0||j>=order.length)return;[order[i],order[j]]=[order[j],order[i]];try{await api('automations/reorder',{project_id:automationProject.id,order});await reloadAutomations()}catch(e){toast(e.message)}}
 async function toggleAutomation(i){let r=automationRules[i];try{await api('automations/save',{id:r.id,project_id:automationProject.id,name:r.name,enabled:!r.enabled,trigger:r.trigger,conditions:r.conditions,actions:r.actions,position:r.position??i});await reloadAutomations()}catch(e){toast(e.message)}}
 async function deleteAutomation(i){let r=automationRules[i];if(!confirm(`¿Eliminar la automatización «${r.name}»?`))return;try{await api('automations/delete',{project_id:automationProject.id,id:r.id});await reloadAutomations()}catch(e){toast(e.message)}}
+let mineBoard='all',mineSearch='',mineIncludeDone=false;
+function myTasks(){
+  let priority={Alta:0,Normal:1,Baja:2};
+  return data.tasks.filter(t=>t.assignee_id===data.user.id&&(mineIncludeDone||!taskStatus(t)?.is_done)&&matchesSearch(t,mineSearch)&&
+    (mineBoard==='all'||(mineBoard==='none'?!t.has_projects:taskContextProjects(t).includes(Number(mineBoard)))))
+    .sort((a,b)=>Number(!a.due_date)-Number(!b.due_date)||(a.due_date||'').localeCompare(b.due_date||'')||((priority[a.priority]??3)-(priority[b.priority]??3))||b.id-a.id);
+}
+function renderMyTaskResults(){
+  let container=$('#myTaskResults');if(!container)return;let tasks=myTasks();
+  container.innerHTML=tasks.length?`<div class="my-tasks-table-wrap"><table class="my-tasks-table"><thead><tr><th scope="col">Tarea</th><th scope="col">Tablero</th><th scope="col">Estado</th><th scope="col">Fecha límite</th><th scope="col">Prioridad</th></tr></thead><tbody>${tasks.map(t=>{
+    let controls=taskQuickControls(t,t.can_edit),projects=taskContextProjects(t).map(id=>data.projects.find(p=>p.id===id)).filter(Boolean);
+    return `<tr><td><button type="button" class="task-list-title" onclick="openTask(${t.id})">${esc(t.title)}</button>${t.parent_id?'<small>Subtarea</small>':''}</td><td>${projects.length?projects.map(p=>`<button type="button" class="my-tasks-project" onclick="selectProject(${p.id})">${esc(p.name)}</button>`).join(' '):'<span class="muted">Sin proyecto</span>'}</td><td>${controls.statusControl}</td><td>${controls.dateControl}</td><td>${controls.priorityControl}</td></tr>`;
+  }).join('')}</tbody></table></div>`:'<div class="empty-state">No hay tareas que coincidan con los filtros.</div>';
+  let count=$('#myTaskCount');if(count)count.textContent=`${tasks.length} ${tasks.length===1?'tarea':'tareas'}`;
+}
+function renderMyTasks(){
+  if(mineBoard!=='all'&&mineBoard!=='none'&&!data.projects.some(p=>String(p.id)===mineBoard))mineBoard='all';
+  let main=$('#app main');if(!main)return;main.classList.add('board-main');
+  main.innerHTML=`<header class="topbar"><div class="breadcrumb">${esc(data.workspace_name)} <span>/</span> <strong>Mis tareas</strong></div></header><section class="content stats-layout my-tasks"><div class="project-heading"><div class="project-heading-main"><div class="project-title-row"><h1>Mis tareas</h1></div><p>Las tareas asignadas a ti, en todos tus tableros.</p></div></div><div class="my-tasks-filters"><label>Buscar<input type="search" id="myTaskSearch" placeholder="Nombre o descripción" value="${esc(mineSearch)}" oninput="mineSearch=this.value;renderMyTaskResults()"></label><label>Tablero<select aria-label="Filtrar por tablero" onchange="mineBoard=this.value;renderMyTaskResults()"><option value="all" ${mineBoard==='all'?'selected':''}>Todos los tableros</option><option value="none" ${mineBoard==='none'?'selected':''}>Sin proyecto</option>${data.projects.map(p=>`<option value="${p.id}" ${mineBoard===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label class="my-tasks-check"><input type="checkbox" ${mineIncludeDone?'checked':''} onchange="mineIncludeDone=this.checked;renderMyTaskResults()"> Incluir finalizadas</label><span id="myTaskCount" class="muted" aria-live="polite"></span></div><div id="board" tabindex="0" role="region" aria-label="Lista de mis tareas"><div id="myTaskResults"></div></div></section>`;
+  renderMyTaskResults();
+}
 const renderBoardWithoutAutomations=render;
 render=function(){
   renderBoardWithoutAutomations();let p=data.projects.find(x=>x.id===active),heading=$('.project-title-row');
+  let caption=$('#mainSidebar .nav-caption');if(caption){let button=document.createElement('button');button.type='button';button.className='nav-item'+(active==='mine'?' selected':'');button.setAttribute('aria-label','Mis tareas');button.innerHTML=`<span>${icon('tasks')}</span><span class="nav-label">Mis tareas</span><em>${data.tasks.filter(t=>t.assignee_id===data.user.id&&!taskStatus(t)?.is_done).length}</em>`;button.onclick=()=>selectProject('mine');caption.after(button)}
+  if(active==='mine'){renderMyTasks();return}
   if(p){
     let first=$('.tabs > .tab');if(first){let tab=document.createElement('button');tab.type='button';tab.className='tab'+(boardView==='list'?' active':'');tab.textContent='☷  Lista';tab.onclick=()=>setBoardView('list');first.after(tab)}
     if(boardView==='list'){

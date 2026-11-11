@@ -579,6 +579,19 @@ class TaskTypesTest(unittest.TestCase):
         for path in ('/board/1','/board/nope','/board/1/task/'+task,'/board/'+board+'/task/1'):
             self.assertEqual(client.get(path).status_code,404)
 
+    def test_my_tasks_uses_only_tasks_accessible_to_user(self):
+        visible=self.post('tasks',{'title':'Visible','project_id':1,'column_id':1})[1]['id']
+        hidden=self.post('tasks',{'title':'Sin acceso','project_id':2,'column_id':2})[1]['id']
+        orphan=self.post('tasks',{'title':'Sin proyecto'})[1]['id']
+        subtask=self.post('tasks',{'title':'Heredada','parent_id':visible})[1]['id']
+        for tid in (visible,hidden,orphan,subtask): self.post('task/update',{'id':tid,'assignee_id':2})
+        tasks={t['id']:t for t in self.get('data',2)[1]['tasks']}
+        self.assertTrue({visible,orphan,subtask}<=tasks.keys());self.assertNotIn(hidden,tasks)
+        self.assertFalse(tasks[orphan]['has_projects']);self.assertEqual(tasks[subtask]['inherited_project_ids'],[1])
+        client=app.app.test_client();response=client.get('/my-tasks')
+        self.assertEqual(response.status_code,200);self.assertIn(b'<div id="app">',response.data)
+        self.assertEqual(client.get('/api/data').status_code,401)
+
     def test_flask_authentication_cookie_and_request_limits(self):
         client=app.app.test_client()
         self.assertEqual(client.get('/api/data').status_code,401)

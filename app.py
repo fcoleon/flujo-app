@@ -177,6 +177,7 @@ def task_title(value):
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
 
 @app.get('/')
+@app.get('/my-tasks')
 @app.get('/t/<public_id>')
 @app.get('/board/<board_id>')
 @app.get('/board/<board_id>/task/<public_id>')
