@@ -547,14 +547,14 @@ def main(argv=None):
             write_atomic(NGINX_FILE, updated)
             try:
                 run(['nginx', '-t'])
-                run(['supervisorctl', 'restart', PROGRAM])
+                run(['supervisorctl', 'start' if own_pid == 0 else 'restart', PROGRAM])
                 run(['supervisorctl', 'status', PROGRAM])
             except BaseException:
                 write_atomic(NGINX_FILE, original)
                 raise
             run(['systemctl', 'reload', 'nginx'])
         else:
-            run(['supervisorctl', 'restart', PROGRAM])
+            run(['supervisorctl', 'start' if own_pid == 0 else 'restart', PROGRAM])
             run(['supervisorctl', 'status', PROGRAM])
     print('Flujo está en ejecución.')
     return 0

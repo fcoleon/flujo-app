@@ -12,12 +12,14 @@ OPS = {'eq', 'ne', 'has', 'empty', 'overdue', 'today', 'before', 'after'}
 
 def init(c):
     c.execute('''CREATE TABLE IF NOT EXISTS automation_rules(
-        id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         name TEXT NOT NULL, enabled INTEGER NOT NULL, trigger TEXT NOT NULL, conditions TEXT NOT NULL,
         actions TEXT NOT NULL, position INTEGER NOT NULL)''')
     c.execute('CREATE INDEX IF NOT EXISTS automation_rules_project ON automation_rules(project_id,position,id)')
+    if 'disabled_reason' not in {row[1] for row in c.execute('PRAGMA table_info(automation_rules)')}:
+        c.execute('ALTER TABLE automation_rules ADD COLUMN disabled_reason TEXT')
     c.execute('''CREATE TABLE IF NOT EXISTS automation_runs(
-        id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         rule_id INTEGER REFERENCES automation_rules(id) ON DELETE SET NULL, rule_name TEXT NOT NULL,
         task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL, actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         trigger_type TEXT NOT NULL, outcome TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL)''')
@@ -49,7 +51,9 @@ def value(c, project, field, v, empty=False, relative=False):
             'status': ('SELECT 1 FROM task_statuses s JOIN task_types t ON t.id=s.type_id WHERE s.id=? AND t.project_id=?', (n, project)),
             'assignee_id': ('SELECT 1 FROM users WHERE id=? AND blocked=0', (n,)),
         }
-        if not c.execute(*queries[field]).fetchone(): raise ValueError(f'{field} no existe o no pertenece al tablero')
+        if not c.execute(*queries[field]).fetchone():
+            label = {'column': 'La columna', 'type': 'El tipo de tarea', 'status': 'El estado', 'assignee_id': 'El responsable'}[field]
+            raise ValueError(f'{label} (ID {n}) ya no está disponible')
         return str(n)
     if field == 'due_date':
         if relative and isinstance(v, str) and v.lstrip('-').isdigit() and -3650 <= int(v) <= 3650:
@@ -101,6 +105,24 @@ def validate(c, project, b):
     return name.strip(), int(enabled), json.dumps(t), json.dumps(cs), json.dumps(ac)
 
 
+def disable(c, rule, reason):
+    if not c.execute('UPDATE automation_rules SET enabled=0,disabled_reason=? WHERE id=? AND enabled=1', (reason, rule['id'])).rowcount:
+        return None
+    return {'id': rule['id'], 'project_id': rule['project_id'], 'name': rule['name'], 'reason': reason}
+
+
+def disable_invalid(c):
+    disabled = []
+    for row in c.execute('SELECT * FROM automation_rules WHERE enabled=1 ORDER BY project_id,position,id').fetchall():
+        rule = rule_data(row)
+        try:
+            validate(c, rule['project_id'], rule)
+        except ValueError as exc:
+            notice = disable(c, rule, str(exc))
+            if notice: disabled.append(notice)
+    return disabled
+
+
 def snapshot(c, tid, project):
     row = c.execute('''SELECT t.*, p.column_id, s.is_done FROM tasks t JOIN task_types ty ON ty.id=t.type_id
         JOIN placements p ON p.task_id=t.id AND p.project_id=ty.project_id
@@ -126,9 +148,9 @@ def matches(conditions, state, today):
 
 def run(c, tid, project, events, actor, now, record, metric_event):
     initial = snapshot(c, tid, project) if project else None
-    if not initial: return
+    if not initial: return []
     rules = [rule_data(r) for r in c.execute('SELECT * FROM automation_rules WHERE project_id=? AND enabled=1 ORDER BY position,id', (project,))]
-    queue = deque((kind, before, after, initial) for kind, before, after in events); fired = set(); processed = 0
+    queue = deque((kind, before, after, initial) for kind, before, after in events); fired = set(); processed = 0; disabled = []
     # ponytail: cap chains at 100 events and 100 rules; raise limits if real boards need more.
     while queue and processed < 100 and len(fired) < 100:
         kind, before, after, event_state = queue.popleft(); processed += 1
@@ -169,7 +191,10 @@ def run(c, tid, project, events, actor, now, record, metric_event):
             except (ValueError, sqlite3.IntegrityError) as exc:
                 c.execute('ROLLBACK TO automation_rule'); c.execute('RELEASE automation_rule')
                 outcome, error = 'error', str(exc)[:1000]
+                notice = disable(c, rule, error)
+                if notice: disabled.append(notice)
             c.execute('INSERT INTO automation_runs(project_id,rule_id,rule_name,task_id,actor_id,trigger_type,outcome,error,created_at) VALUES(?,?,?,?,?,?,?,?,?)', (project, rule['id'], rule['name'], tid, actor, kind, outcome, error, now()))
             if error: record(c, tid, actor, f'automatización «{rule["name"]}» falló: {error}')
     if queue:
         record(c, tid, actor, 'automatización: cadena detenida por superar el límite de eventos o reglas')
+    return disabled

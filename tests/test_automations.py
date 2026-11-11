@@ -132,8 +132,16 @@ class AutomationsIntegrationTest(unittest.TestCase):
                                                   {'type': 'status', 'value': incompatible}])
         self.rule('No encadenar', {'type': 'status', 'to': self.done}, [{'type': 'priority', 'value': 'Alta'}])
         self.rule('Continúa', {'type': 'created'}, [{'type': 'priority', 'value': 'Baja'}])
-        tid = self.task(project_id=1, column_id=1)
-        runs = self.runs()
+        result = self.post('tasks', {'title':'Tarea', 'project_id':1, 'column_id':1})
+        tid = result['id']
+        self.assertEqual([r['name'] for r in result['disabled_automations']], ['Falla'])
+        self.assertIn('incompatible', result['disabled_automations'][0]['reason'])
+        rule = next(r for r in self.request('GET', 'automations?project_id=1').get_json()['rules'] if r['name']=='Falla')
+        self.assertFalse(rule['enabled'])
+        self.assertIn('incompatible', rule['disabled_reason'])
+        second = self.post('tasks', {'title':'Otra', 'project_id':1, 'column_id':1})
+        self.assertNotIn('disabled_automations', second)
+        runs = [r for r in self.runs() if r['task_id']==tid]
         self.assertEqual([(r['rule_name'], r['outcome']) for r in runs], [('Continúa', 'success'), ('Falla', 'error')])
         self.assertIn('incompatible', runs[1]['error'])
         with app.db() as c:
@@ -144,6 +152,59 @@ class AutomationsIntegrationTest(unittest.TestCase):
         messages = [h['message'] for h in self.request('GET', f'history/{tid}').get_json()]
         self.assertTrue(any('falló' in m for m in messages))
         self.assertFalse(any('cambió status' in m for m in messages))
+
+    def test_removed_status_disables_only_active_rules_and_can_be_corrected(self):
+        with app.db() as c:
+            typ = app.create_type(c, 1, 'Revisión')
+            deleted = c.execute("INSERT INTO task_statuses(type_id,name,color,is_done,position) VALUES(?, 'Extra','#123456',0,2)", (typ,)).lastrowid
+            statuses = [dict(row) for row in c.execute('SELECT * FROM task_statuses WHERE type_id=? AND id!=? ORDER BY position', (typ,deleted))]
+        rules = [
+            self.rule('Gatillante', {'type':'status','to':deleted}, [{'type':'priority','value':'Alta'}]),
+            self.rule('Condición', {'type':'created'}, [{'type':'priority','value':'Alta'}], [{'field':'status','op':'ne','value':deleted}]),
+            self.rule('Acción', {'type':'created'}, [{'type':'status','value':deleted}]),
+            self.rule('Pausada', {'type':'status','to':deleted}, [{'type':'priority','value':'Alta'}]),
+        ]
+        paused = rules[-1]
+        self.post('automations/save', {**paused, 'enabled':False})
+        payload = {'id':typ,'name':'Revisión','statuses':statuses,'deleted_status_ids':[deleted]}
+        result = self.post('task-types/update', payload)
+        self.assertEqual({r['name'] for r in result['disabled_automations']}, {'Gatillante','Condición','Acción'})
+        current = self.request('GET','automations?project_id=1').get_json()['rules']
+        self.assertTrue(all(not r['enabled'] for r in current))
+        self.assertTrue(all(r['disabled_reason'] for r in current if r['name']!='Pausada'))
+        self.assertIsNone(next(r for r in current if r['name']=='Pausada')['disabled_reason'])
+        self.assertNotIn('disabled_automations', self.post('workspace/block', {'user_id':4,'blocked':True}))
+        rule = next(r for r in current if r['name']=='Acción')
+        self.post('automations/save', {**rule, 'enabled':True}, status=400)
+        corrected = self.post('automations/save', {**rule, 'enabled':True, 'actions':[{'type':'priority','value':'Alta'}]})['rule']
+        self.assertTrue(corrected['enabled'])
+        self.assertIsNone(corrected['disabled_reason'])
+
+    def test_blocked_user_disables_references_and_does_not_repeat_notice(self):
+        a = self.rule('Asignar', {'type':'created'}, [{'type':'assignee_id','value':4}])
+        b = self.rule('Condición', {'type':'created'}, [{'type':'priority','value':'Alta'}], [{'field':'assignee_id','op':'eq','value':4}])
+        result = self.post('workspace/block', {'user_id':4,'blocked':True})
+        self.assertEqual({r['id'] for r in result['disabled_automations']}, {a['id'],b['id']})
+        self.assertNotIn('disabled_automations', self.post('workspace/block', {'user_id':4,'blocked':True}))
+        self.post('workspace/block', {'user_id':4,'blocked':False})
+        current = self.request('GET','automations?project_id=1').get_json()['rules']
+        self.assertTrue(all(not r['enabled'] for r in current))
+
+    def test_deleted_type_disables_references_to_type_and_its_states(self):
+        with app.db() as c:
+            typ = app.create_type(c, 1, 'Temporal')
+            status = c.execute('SELECT id FROM task_statuses WHERE type_id=? ORDER BY id', (typ,)).fetchone()[0]
+        a = self.rule('Tipo', {'type':'created'}, [{'type':'priority','value':'Alta'}], [{'field':'type','op':'eq','value':typ}])
+        b = self.rule('Estado', {'type':'created'}, [{'type':'status','value':status}])
+        result = self.post('task-types/delete', {'id':typ})
+        self.assertEqual({r['id'] for r in result['disabled_automations']}, {a['id'],b['id']})
+        self.assertTrue(all(r['project_name']=='1' for r in result['disabled_automations']))
+
+    def test_failed_change_does_not_disable_rules(self):
+        rule = self.rule('Estado', {'type':'status','to':self.done}, [{'type':'priority','value':'Alta'}])
+        self.post('task-types/delete', {'id':self.typ}, status=400)
+        current = self.request('GET','automations?project_id=1').get_json()['rules'][0]
+        self.assertEqual(current, rule)
 
     def test_automatic_move_appends_and_triggers_column_rule(self):
         existing = self.task(project_id=1, column_id=3)

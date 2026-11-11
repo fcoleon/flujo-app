@@ -271,6 +271,22 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['supervisorctl','restart','flujo-app'], ['supervisorctl','status','flujo-app']])
 
+    def test_update_starts_stopped_flujo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve()
+            (root/'config.ini').write_text('[app]\ndatabase=tasks.db\nport=8100\ntimezone=UTC\n')
+            runtime=root/'runtime.conf';runtime.write_text('existing')
+            user=deploy.pwd.getpwuid(os.getuid()).pw_name
+            with patch.object(deploy,'APP_DIR',root), patch.object(deploy,'TMPFILES_FILE',runtime), patch.object(deploy.os,'geteuid',return_value=0), \
+                 patch.object(deploy.shutil,'which',return_value='/usr/bin/fake'), patch.object(deploy,'check_program_identity',return_value=0), \
+                 patch.object(deploy,'installed_supervisor_settings',return_value=user), patch.object(deploy,'check_socket'), \
+                 patch.object(deploy,'plan_nginx_socket_update',return_value=None), patch.object(deploy,'plan_nginx_static_update',return_value=None), \
+                 patch.object(deploy,'installed_socket_group',return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
+                 patch.object(deploy,'ensure_socket_directory'), patch.object(deploy,'prepare_venv'), patch.object(deploy,'run') as run:
+                self.assertEqual(deploy.main(['update']),0)
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ['supervisorctl','start','flujo-app'], ['supervisorctl','status','flujo-app']])
+
     def test_update_refuses_mismatched_nginx_socket(self):
         with tempfile.TemporaryDirectory() as tmp:
             site=Path(tmp)/'flujo-app';site.write_text('proxy_pass http://unix:/run/flujo/flujo.sock:;')
