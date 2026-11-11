@@ -1,13 +1,13 @@
 import hashlib, hmac, json, os, secrets, sqlite3, re, uuid, subprocess
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from statistics import median
+import analytics as metrics
+import automations
 from contextlib import closing
 from flask import Flask, jsonify, make_response, request, send_from_directory, abort, render_template_string
 from werkzeug.middleware.proxy_fix import ProxyFix
-from urllib.parse import urlparse, parse_qs
-from html.parser import HTMLParser
-from html import escape
+from descriptions import DescriptionSanitizer, sanitize_description
+from auth import hashpw, current_user, session_response, rotate_session
 from pathlib import Path
 from settings import load_settings
 
@@ -82,6 +82,7 @@ def init():
         c.execute("INSERT OR IGNORE INTO app_meta(key,value) VALUES('metrics_started_at',?)",(now(),))
         if 'description_format' not in {r['name'] for r in c.execute('PRAGMA table_info(tasks)')}:
             c.execute("ALTER TABLE tasks ADD COLUMN description_format TEXT NOT NULL DEFAULT 'plain'")
+        automations.init(c)
 
 def create_type(c, project_id, name, is_base=False):
     # Historical metrics retain type IDs even after a type is deleted.
@@ -117,78 +118,12 @@ def type_data(c,row):
     item=dict(row); item['statuses']=[dict(s) for s in c.execute('SELECT * FROM task_statuses WHERE type_id=? ORDER BY position,id',(row['id'],))]; return item
 
 def metric_event(c, task_id, event, actor_id):
-    row=c.execute('SELECT t.created_at,t.type_id,t.assignee_id,ty.name,assignee.name AS assignee_name FROM tasks t JOIN task_types ty ON ty.id=t.type_id LEFT JOIN users assignee ON assignee.id=t.assignee_id WHERE t.id=?',(task_id,)).fetchone()
-    if not row: return
-    actor=c.execute('SELECT name FROM users WHERE id=?',(actor_id,)).fetchone()
-    timestamp=now()
-    for project in c.execute('SELECT project_id FROM placements WHERE task_id=?',(task_id,)).fetchall():
-        c.execute('INSERT INTO metric_events(project_id,task_id,event,occurred_at,task_created_at,type_id,type_name,actor_id,actor_name,assignee_id,assignee_name,identity_recorded) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)',(project['project_id'],task_id,event,timestamp,row['created_at'],row['type_id'],row['name'],actor_id,actor['name'] if actor else None,row['assignee_id'],row['assignee_name']))
+    return metrics.metric_event(c,task_id,event,actor_id,now)
 
 def analytics(c, project_id, month, type_filter=None):
-    if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month): raise ValueError('Mes inválido')
-    year,mon=map(int,month.split('-'))
-    if year<2 or year>9998: raise ValueError('Mes inválido')
-    start=datetime(year,mon,1,tzinfo=STATS_ZONE)
-    end=datetime(year+1,1,1,tzinfo=STATS_ZONE) if mon==12 else datetime(year,mon+1,1,tzinfo=STATS_ZONE)
-    rows=c.execute('SELECT * FROM metric_events WHERE project_id=? AND occurred_at>=? AND occurred_at<? ORDER BY occurred_at,id',(project_id,start.astimezone(timezone.utc).isoformat(),end.astimezone(timezone.utc).isoformat())).fetchall()
-    type_rows=c.execute('SELECT id,name FROM task_types WHERE project_id=? ORDER BY is_base DESC,name',(project_id,)).fetchall()
-    types={r['id']:r['name'] for r in type_rows}
-    for r in c.execute('SELECT type_id,type_name FROM metric_events WHERE project_id=? ORDER BY id',(project_id,)):
-        types.setdefault(r['type_id'],r['type_name'])
-    if type_filter is not None: rows=[row for row in rows if row['type_id']==type_filter]
-    weeks=[{'label':f'{day}–{min(day+6,(end-start).days)}','created':0,'completed':0} for day in range(1,(end-start).days+1,7)]
-    totals={'created':0,'completed':0,'reopened':0};durations=[];people={}
-    def person(key,name):
-        if key not in people: people[key]={'name':name,'created':0,'completed':0,'durations':[]}
-        elif name and key.startswith('user:'): people[key]['name']=name
-        return people[key]
-    for row in rows:
-        event=row['event'];totals[event]+=1
-        stamp=datetime.fromisoformat(row['occurred_at']);day=stamp.astimezone(STATS_ZONE).day
-        if event in ('created','completed'): weeks[(day-1)//7][event]+=1
-        if event=='created':
-            if not row['identity_recorded']: p=person('unknown','Sin datos históricos')
-            elif row['actor_id'] is None: p=person('unknown','Sin datos históricos')
-            else: p=person('user:'+str(row['actor_id']),row['actor_name'] or 'Usuario eliminado')
-            p['created']+=1
-        if event=='completed':
-            if not row['identity_recorded']: p=person('unknown','Sin datos históricos')
-            elif row['assignee_id'] is None: p=person('unassigned','Sin responsable')
-            else: p=person('user:'+str(row['assignee_id']),row['assignee_name'] or 'Usuario eliminado')
-            p['completed']+=1
-            try:
-                created=datetime.fromisoformat(row['task_created_at'])
-                if created.tzinfo is None: created=created.replace(tzinfo=timezone.utc)
-                elapsed=(stamp-created).total_seconds()/86400
-                if elapsed>=0: durations.append(elapsed);p['durations'].append(elapsed)
-            except (ValueError,TypeError): pass
-    buckets=[{'label':'Hasta 1 día','count':0},{'label':'1–3 días','count':0},{'label':'3–7 días','count':0},{'label':'Más de 7 días','count':0}]
-    for days in durations: buckets[0 if days<=1 else 1 if days<=3 else 2 if days<=7 else 3]['count']+=1
-    people_rows=[]
-    for key,p in people.items():
-        times=p.pop('durations');p['average_days']=sum(times)/len(times) if times else None;p['duration_count']=len(times);p['special']=not key.startswith('user:');people_rows.append(p)
-    people_rows.sort(key=lambda p:(p['special'],p['name'].casefold()))
-    return {'people':people_rows,'identity_started_at':c.execute("SELECT value FROM app_meta WHERE key='metrics_identity_started_at'").fetchone()['value'],'month':month,'timezone':str(STATS_ZONE),'started_at':c.execute("SELECT value FROM app_meta WHERE key='metrics_started_at'").fetchone()['value'],'types':[{'id':k,'name':v} for k,v in types.items()],'totals':totals,'average_days':sum(durations)/len(durations) if durations else None,'median_days':median(durations) if durations else None,'duration_count':len(durations),'weeks':weeks,'durations':buckets}
-
-class DescriptionSanitizer(HTMLParser):
-    allowed = {'p','div','br','strong','b','em','i','u','s','ul','ol','li','blockquote','h2','h3','a'}
-    def __init__(self):
-        super().__init__(convert_charrefs=True); self.parts=[]
-    def handle_starttag(self, tag, attrs):
-        if tag not in self.allowed: return
-        if tag == 'a':
-            href=dict(attrs).get('href','').strip()
-            if urlparse(href).scheme.lower() not in ('http','https','mailto'): self.parts.append('<a>'); return
-            self.parts.append('<a href="'+escape(href,quote=True)+'" target="_blank" rel="noopener noreferrer">'); return
-        self.parts.append('<'+tag+'>')
-    def handle_endtag(self, tag):
-        if tag in self.allowed and tag != 'br': self.parts.append('</'+tag+'>')
-    def handle_data(self, data): self.parts.append(escape(data))
-def sanitize_description(value):
-    parser=DescriptionSanitizer(); parser.feed(value); parser.close(); return ''.join(parser.parts)
+    return metrics.analytics(c,project_id,month,type_filter,STATS_ZONE)
 
 def now(): return datetime.now(timezone.utc).isoformat()
-def hashpw(p,s): return hashlib.pbkdf2_hmac('sha256',p.encode(),bytes.fromhex(s),260000).hex()
 def record(c,tid,uid,msg): c.execute('INSERT INTO history(task_id,user_id,message,created_at) VALUES(?,?,?,?)',(tid,uid,msg,now()))
 def role(c,u,p):
     if u['admin']: return 'admin'
@@ -214,20 +149,6 @@ if os.environ.get('FLUJO_BEHIND_PROXY') == '1':
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=0, x_port=0, x_prefix=0)
 
 def respond(data,status=200): return jsonify(data),status
-
-def current_user(c):
-    return c.execute('SELECT u.id,u.name,u.username,u.admin FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=?',(request.cookies.get('session',''),)).fetchone()
-
-def session_response(token):
-    response=make_response(jsonify({'ok':True}))
-    response.set_cookie('session',token,httponly=True,samesite='Strict',secure=request.is_secure,path='/')
-    return response
-
-def rotate_session(c,user_id):
-    c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
-    token=secrets.token_urlsafe(32)
-    c.execute('INSERT INTO sessions VALUES(?,?)',(token,user_id))
-    return token
 
 def text_field(body,key):
     value=body.get(key)
@@ -311,6 +232,16 @@ def api_get():
                 if role(c,u,p)!='admin': return respond({'error':'Solo los administradores del proyecto pueden ver estadísticas'},403)
                 type_filter=int(params['type_id'][0]) if params.get('type_id') else None
                 return respond(analytics(c,p,month,type_filter))
+            if path=='/api/automations':
+                p=automations.ident(request.args.get('project_id'))
+                if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)
+                if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin acceso a automatizaciones')
+                return respond({'rules':[automations.rule_data(r) for r in c.execute('SELECT * FROM automation_rules WHERE project_id=? ORDER BY position,id',(p,))]})
+            if path=='/api/automations/runs':
+                p=automations.ident(request.args.get('project_id'))
+                if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)
+                if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin acceso a automatizaciones')
+                return respond({'runs':[dict(r) for r in c.execute('SELECT * FROM automation_runs WHERE project_id=? ORDER BY id DESC LIMIT 100',(p,))]})
             if path.startswith('/api/comments/'):
                 tid=int(path.split('/')[-1])
                 if not can_task(c,u,tid): return respond({'error':'Sin acceso'},403)
@@ -320,6 +251,7 @@ def api_get():
                 if not can_task(c,u,tid): return respond({'error':'Sin acceso'},403)
                 return respond([dict(x) for x in c.execute('SELECT h.*,COALESCE(u.name,"Usuario eliminado") AS actor FROM history h LEFT JOIN users u ON u.id=h.user_id WHERE task_id=? ORDER BY h.id DESC',(tid,))])
             return respond({'error':'No encontrado'},404)
+    except PermissionError as e: return respond({'error':str(e)},403)
     except (ValueError, KeyError, sqlite3.IntegrityError) as e: return respond({'error':str(e)},400)
 
 def api_post():
@@ -372,6 +304,57 @@ def api_post():
                 return session_response(token)
             if flags['must_change_password']:
                 return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
+            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder'):
+                c.execute('BEGIN IMMEDIATE')
+            if path in ('/api/workspace/update','/api/workspace/block','/api/profile','/api/users'):
+                result=post_workspace(c,u,path,b)
+            elif path in ('/api/projects','/api/projects/update','/api/members','/api/columns','/api/columns/rename','/api/columns/reorder'):
+                result=post_projects(c,u,path,b)
+            elif path in ('/api/tasks','/api/task-types','/api/task-types/delete','/api/task-types/update','/api/task/type-status'):
+                result=post_task_types(c,u,path,b)
+            elif path in ('/api/comments','/api/comments/update','/api/task/delete','/api/task/update','/api/task/move','/api/task/project'):
+                result=post_tasks(c,u,path,b)
+            elif path in ('/api/automations/save','/api/automations/delete','/api/automations/reorder'):
+                result=post_automations(c,u,path,b)
+            else: return respond({'error':'No encontrado'},404)
+            if result is not None: return result
+            c.commit(); return respond({'ok':True})
+    except PermissionError as e: return respond({'error':str(e)},403)
+    except (ValueError, KeyError, sqlite3.IntegrityError, json.JSONDecodeError) as e: return respond({'error':str(e) or 'Datos inválidos'},400)
+
+def post_automations(c,u,path,b):
+    p=automations.ident(b.get('project_id'))
+    if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): raise ValueError('Proyecto no encontrado')
+    if role(c,u,p)!='admin': raise PermissionError('Solo administradores pueden configurar automatizaciones')
+    if path=='/api/automations/save':
+        data=automations.validate(c,p,b)
+        if b.get('id'):
+            rid=automations.ident(b['id'])
+            if not c.execute('SELECT 1 FROM automation_rules WHERE id=? AND project_id=?',(rid,p)).fetchone(): raise ValueError('Regla no encontrada')
+            c.execute('UPDATE automation_rules SET name=?,enabled=?,trigger=?,conditions=?,actions=? WHERE id=? AND project_id=?',(*data,rid,p))
+        else:
+            if c.execute('SELECT COUNT(*) FROM automation_rules WHERE project_id=?',(p,)).fetchone()[0]>=100: raise ValueError('Máximo 100 reglas por tablero')
+            rid=c.execute('INSERT INTO automation_rules(project_id,name,enabled,trigger,conditions,actions,position) VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM automation_rules WHERE project_id=?))',(p,*data,p)).lastrowid
+        result=automations.rule_data(c.execute('SELECT * FROM automation_rules WHERE id=?',(rid,)).fetchone())
+        c.commit(); return respond({'rule':result})
+    if path=='/api/automations/delete':
+        rid=automations.ident(b.get('id'))
+        if not c.execute('DELETE FROM automation_rules WHERE id=? AND project_id=?',(rid,p)).rowcount: raise ValueError('Regla no encontrada')
+    else:
+        order=b.get('order')
+        if not isinstance(order,list): raise ValueError('Orden inválido')
+        order=[automations.ident(x) for x in order]
+        current={r['id'] for r in c.execute('SELECT id FROM automation_rules WHERE project_id=?',(p,))}
+        if len(order)!=len(current) or set(order)!=current: raise ValueError('Las reglas cambiaron; vuelve a cargar')
+        for position,rid in enumerate(order): c.execute('UPDATE automation_rules SET position=? WHERE id=? AND project_id=?',(position,rid,p))
+
+def automate(c,tid,events,uid,project=None):
+    if project is None:
+        row=c.execute('SELECT ty.project_id FROM tasks t JOIN task_types ty ON ty.id=t.type_id WHERE t.id=?',(tid,)).fetchone()
+        project=row['project_id'] if row else None
+    automations.run(c,tid,project,events,uid,now,record,metric_event)
+
+def post_workspace(c,u,path,b):
             if path=='/api/workspace/update':
                 if not u['admin']: raise PermissionError('Solo un administrador del workspace puede cambiar el nombre')
                 name=b.get('name')
@@ -409,7 +392,9 @@ def api_post():
                 name=b.get('name','').strip(); username=b.get('username','').strip().lower(); pw=b.get('password','')
                 if not name or not username or len(pw)<8: raise ValueError('Completa los campos; la contraseña debe tener al menos 8 caracteres')
                 s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin,must_change_password) VALUES(?,?,?,?,?,1)',(name,username,hashpw(pw,s),s,int(bool(b.get('admin')))))
-            elif path=='/api/projects':
+
+def post_projects(c,u,path,b):
+            if path=='/api/projects':
                 if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear proyectos')
                 name=b.get('name','').strip()
                 if not name: raise ValueError('El nombre es obligatorio')
@@ -453,7 +438,9 @@ def api_post():
                 current={row['id'] for row in c.execute('SELECT id FROM columns WHERE project_id=?',(p,))}
                 if len(order)!=len(current) or set(order)!=current: raise ValueError('El tablero cambió; vuelve a intentarlo')
                 for position,col in enumerate(order): c.execute('UPDATE columns SET position=? WHERE project_id=? AND id=?',(position,p,col))
-            elif path=='/api/tasks':
+
+def post_task_types(c,u,path,b):
+            if path=='/api/tasks':
                 title=b.get('title','').strip(); parent=b.get('parent_id') or None
                 if not title: raise ValueError('El nombre es obligatorio')
                 if parent:
@@ -474,6 +461,7 @@ def api_post():
                 record(c,tid,u['id'],'creó la tarea')
                 metric_event(c,tid,'created',u['id'])
                 if parent: record(c,parent,u['id'],'agregó la subtarea '+title)
+                if p: automate(c,tid,[('created',None,None)],u['id'],p)
                 c.commit(); return respond({'id':tid})
             elif path=='/api/task-types':
                 p=int(b['project_id']); name=str(b.get('name','')).strip()
@@ -534,7 +522,11 @@ def api_post():
                         old_done=c.execute('SELECT is_done FROM task_statuses WHERE id=?',(task['status_id'],)).fetchone()['is_done']
                         c.execute('UPDATE tasks SET status_id=? WHERE id=?',(status_id,tid)); record(c,tid,u['id'],'cambió el estado a '+status['name'])
                         if bool(old_done)!=bool(status['is_done']): metric_event(c,tid,'completed' if status['is_done'] else 'reopened',u['id'])
-            elif path=='/api/comments':
+                new_status=c.execute('SELECT status_id FROM tasks WHERE id=?',(tid,)).fetchone()['status_id']
+                if new_status!=task['status_id']: automate(c,tid,[('status',task['status_id'],new_status)],u['id'])
+
+def post_tasks(c,u,path,b):
+            if path=='/api/comments':
                 tid=int(b['task_id']); body=str(b.get('body','')).strip()
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para comentar')
                 if not body: raise ValueError('Escribe un comentario')
@@ -564,6 +556,7 @@ def api_post():
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
                 old=c.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
                 if not old: raise ValueError('Tarea no encontrada')
+                events=[]
                 labels={'title':'nombre','description':'descripción','assignee_id':'responsable','due_date':'fecha límite','priority':'prioridad'}
                 for key,label in labels.items():
                     if key in b:
@@ -573,10 +566,14 @@ def api_post():
                             fmt='html' if b.get('description_format')=='html' else 'plain'
                             if fmt=='html': val=sanitize_description(val)
                             c.execute('UPDATE tasks SET description_format=? WHERE id=?',(fmt,tid))
-                        if str(old[key] or '')!=str(val or ''): c.execute(f'UPDATE tasks SET {key}=? WHERE id=?',(val,tid)); record(c,tid,u['id'],f'actualizó {label}')
+                        if str(old[key] or '')!=str(val or ''):
+                            c.execute(f'UPDATE tasks SET {key}=? WHERE id=?',(val,tid)); record(c,tid,u['id'],f'actualizó {label}')
+                            if key in ('assignee_id','priority','due_date'): events.append((key,old[key],val))
+                if events: automate(c,tid,events,u['id'])
             elif path=='/api/task/move':
                 tid=int(b['id']); p=int(b['project_id']); col=int(b['column_id']); order=b['order']
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
+                if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
                 if not c.execute('SELECT 1 FROM columns WHERE id=? AND project_id=?',(col,p)).fetchone(): raise ValueError('Columna inválida')
                 old=c.execute('SELECT column_id FROM placements WHERE task_id=? AND project_id=?',(tid,p)).fetchone()
                 if not old: raise ValueError('Tarea no encontrada en el proyecto')
@@ -585,6 +582,7 @@ def api_post():
                 c.execute('UPDATE placements SET column_id=? WHERE task_id=? AND project_id=?',(col,tid,p))
                 for i,t in enumerate(order): c.execute('UPDATE placements SET position=? WHERE task_id=? AND project_id=?',(i,t,p))
                 name=c.execute('SELECT name FROM columns WHERE id=?',(col,)).fetchone()['name']; record(c,tid,u['id'],('movió a '+name) if old['column_id']!=col else 'cambió el orden en '+name)
+                if old['column_id']!=col: automate(c,tid,[('column',old['column_id'],col)],u['id'],p)
             elif path=='/api/task/project':
                 tid=int(b['id']); p=int(b['project_id'])
                 if not can_task(c,u,tid,True) or role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
@@ -597,10 +595,6 @@ def api_post():
                     c.execute('INSERT INTO placements VALUES(?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM placements WHERE column_id=?))',(tid,p,col['id'],col['id']))
                     apply_project_base(c,tid,p)
                     record(c,tid,u['id'],'agregó la tarea a un proyecto')
-            else: return respond({'error':'No encontrado'},404)
-            c.commit(); return respond({'ok':True})
-    except PermissionError as e: return respond({'error':str(e)},403)
-    except (ValueError, KeyError, sqlite3.IntegrityError, json.JSONDecodeError) as e: return respond({'error':str(e) or 'Datos inválidos'},400)
 
 if __name__=='__main__':
     init(); app.run(host='127.0.0.1',port=PORT,debug=False,threaded=True)
