@@ -16,9 +16,11 @@ function api(path,body){sent={path,body};return new Promise(()=>{})}
 function taskQuickControls(t,editable){return {statusControl:editable?'EDITAR_ESTADO':'VER_ESTADO',personControl:'RESPONSABLE',dateControl:'FECHA',priorityControl:'PRIORIDAD'}}
 const assert=(v,message)=>{if(!v)throw Error(message)};
 eval(source.slice(source.indexOf('const listCollapsedState='),source.indexOf('function renderBoard()'))+`
+  data.tasks[0].comment_count=2;data.tasks.push({id:4,parent_id:1,placements:[]});
   renderTaskList();let html=board.innerHTML;
   assert(html.indexOf('Primera <span class="count">')<html.indexOf('Primera tarea')&&html.indexOf('Primera tarea')<html.indexOf('Segunda tarea')&&html.indexOf('Segunda tarea')<html.indexOf('Segunda <span class="count">')&&html.indexOf('Segunda <span class="count">')<html.indexOf('Tercera'),'agrupa y ordena');
   assert(html.includes('newTask(10)')&&html.includes('moveListTask(2,10,-1,this)')&&html.includes('startListDrag(event,2)')&&html.includes('EDITAR_ESTADO'),'acciones de editor');
+  assert(html.includes('width="14" height="14"')&&html.includes('Abrir 1 subtarea de Tercera')&&html.includes('Abrir 2 comentarios de Tercera'),'indicadores con iconos accesibles');
   listCollapsedState.set('flujo:list-collapsed:1:1',[10]);renderTaskList();html=board.innerHTML;
   assert(html.includes('aria-expanded="false"')&&html.includes('data-id="2" hidden'),'sección contraída');
   listCollapsedState.set('flujo:list-collapsed:1:1',[]);
