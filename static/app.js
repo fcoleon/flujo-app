@@ -244,7 +244,7 @@ function renderBoard(){
   let scoped=orphan?data.tasks.filter(t=>!t.has_projects&&!t.parent_id):data.tasks.filter(t=>t.placements.some(x=>x.project_id===active));let found=scoped.filter(match).length,count=$('#boardCount');if(count)count.textContent=filter.trim()?`${found} de ${scoped.length} ${scoped.length===1?'tarea':'tareas'}`:`${scoped.length} ${scoped.length===1?'tarea':'tareas'}`;
   if(orphan){let ts=data.tasks.filter(t=>!t.has_projects&&!t.parent_id&&match(t));board.innerHTML=`<div class="orphan-list">${ts.map(t=>card(t,subtaskCounts.get(t.id)||0)).join('')||`<div class="empty-state">${filter.trim()?'No se encontraron tareas.':'No hay tareas sin proyecto.'}</div>`}</div>`;return}
   if(!p)return;let writable=p.role!=='viewer',collapsed=collapsedColumns(p.id);
-  board.innerHTML=`<div class="board" data-project="${p.id}" ondragover="columnDragOver(event)" ondrop="dropColumn(event)">${p.columns.map(c=>{
+  board.innerHTML=`<div class="board" data-project="${p.id}" tabindex="0" role="region" aria-label="Columnas del tablero" ondragover="columnDragOver(event)" ondrop="dropColumn(event)">${p.columns.map(c=>{
     let all=data.tasks.filter(t=>t.placements.some(x=>x.project_id===p.id&&x.column_id===c.id));
     let ts=all.filter(match).sort((a,b)=>a.placements.find(x=>x.project_id===p.id).position-b.placements.find(x=>x.project_id===p.id).position),isCollapsed=collapsed.includes(c.id);
     let handle=writable?`<span class="column-handle" draggable="true" ondragstart="startColumnDrag(event,${c.id})" ondragend="endColumnDrag()" data-tooltip="Arrastrar columna" aria-label="Arrastrar columna ${esc(c.name)}">⠿</span>`:'';
