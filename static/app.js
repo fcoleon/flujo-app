@@ -1,5 +1,5 @@
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let data=null, active=null, taskId=null, dragged=null, filter='', typeDraft=null, statusDrag=null, dragPlaceholder=null, dragSource=null, dragSaving=false;
+let data=null, active=null, taskId=null, dragged=null, filter='', typeDraft=null, statusDrag=null, dragPlaceholder=null, dragSource=null, dragOffsetY=0, dragSaving=false;
 let taskTab='detalle', boardView='board', statsMonth='', statsType='', statsRequest=0, taskDraft=null;
 const cardMotion=new WeakMap();
 let columnDrag=null, columnGhost=null, columnSource=null, columnSaving=false;
@@ -210,7 +210,7 @@ async function quickUpdate(e,id,field){
 
 function dragStart(e,id){
   if(dragSaving||columnSaving||e.target.closest('.quick-control')){e.preventDefault();return}
-  dragged=id;dragSource=e.currentTarget;e.dataTransfer.effectAllowed='move';
+  dragged=id;dragSource=e.currentTarget;dragOffsetY=e.clientY-dragSource.getBoundingClientRect().top;e.dataTransfer.effectAllowed='move';
   e.dataTransfer.setData('text/plain',String(id));
   dragPlaceholder=dragSource.cloneNode(true);
   dragPlaceholder.classList.add('card-placeholder');dragPlaceholder.removeAttribute('draggable');
@@ -226,7 +226,11 @@ function dragOver(e){
   let column=e.currentTarget, cards=column.querySelector('.cards');
   // Use layout positions, not animated rectangles, to keep the insertion point stable.
   let top=cards.getBoundingClientRect().top-cards.scrollTop;
-  let next=[...cards.querySelectorAll('.card:not(.card-placeholder):not(.drag-source)')].filter(card=>card!==dragSource).find(card=>e.clientY<top+card.offsetTop+card.offsetHeight/2);
+  let next=[...cards.querySelectorAll('.card:not(.card-placeholder):not(.drag-source)')].filter(card=>card!==dragSource).find(card=>{
+    let sameColumn=dragPlaceholder.parentElement===cards, below=sameColumn&&(dragPlaceholder.compareDocumentPosition(card)&Node.DOCUMENT_POSITION_FOLLOWING);
+    let edge=sameColumn?e.clientY-dragOffsetY+(below?dragPlaceholder.offsetHeight:0):e.clientY;
+    return edge<top+card.offsetTop+card.offsetHeight*(sameColumn?(below?0.6:0.4):0.5);
+  });
   if(dragPlaceholder.parentElement!==cards||dragPlaceholder.nextElementSibling!==(next||null)){
     let moving=[...document.querySelectorAll('.board .cards .card[data-id]')].filter(card=>card!==dragSource);
     let before=new Map(moving.map(card=>[card,card.getBoundingClientRect().top]));
