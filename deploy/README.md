@@ -81,6 +81,21 @@ Abre `http://localhost:18080` en tu computador con el túnel activo.
 
 ## Actualizar
 
+### Migración manual de IDs AUTOINCREMENT
+
+Para esta actualización, después de `git pull --rebase` y antes del despliegue normal, detén Flujo y respalda la base. La pausa evita que los procesos anteriores escriban mientras se reconstruyen las tablas y hasta que se inicie el código nuevo. Ejecuta la migración como el usuario de la aplicación, con permisos de escritura en la base y su directorio:
+
+```sh
+sudo supervisorctl stop flujo-app
+.venv/bin/python -c 'import os, sqlite3; from pathlib import Path; from settings import load_settings; p=Path(load_settings(environ={"FLUJO_CONFIG_ONLY":"1"})["database"]); b=p.with_name(p.name+".antes-autoincrement.bak"); fd=os.open(b,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600); os.close(fd); src=sqlite3.connect(p.as_uri()+"?mode=rw",uri=True); dst=sqlite3.connect(b); src.backup(dst); dst.close(); src.close(); print("Respaldo:",b)'
+.venv/bin/python deploy/migrate_autoincrement.py
+sudo python3 deploy/deploy.py update
+```
+
+El respaldo no sobrescribe uno existente. Si usas un `config.ini` distinto al de la raíz, proporciona su ruta al script con `--config /ruta/config.ini` y usa esa misma configuración para el respaldo. Verifica la ruta de base impresa antes de continuar; el script usa la configuración de producción e ignora `TASKS_DB`. No crea una base inexistente. Si la migración falla, revierte todos sus cambios; mantén Flujo detenido hasta resolver el error o restaurar el respaldo. La migración es idempotente y conserva los IDs, índices, relaciones y los identificadores históricos aún presentes en reglas o métricas. No puede recuperar IDs antiguos que ya no estén registrados en ningún lado.
+
+### Despliegue normal
+
 Después de copiar el código nuevo, conservando `config.ini`, `.venv` y la base de datos:
 
 ```sh
