@@ -307,17 +307,54 @@ class TaskTypesTest(unittest.TestCase):
     def test_column_rename_and_order_permissions(self):
         with app.db() as c:
             c.execute("INSERT INTO columns(id,project_id,name,position) VALUES(3,1,'Revisión',1)")
-        self.assertEqual(self.post('columns/rename',{'column_id':1,'name':'Pendientes'},user=2)[0],200)
+        self.assertEqual(self.post('columns/rename',{'column_id':1,'name':'Pendientes'},user=2)[0],403)
         self.assertEqual(self.post('columns/rename',{'column_id':1,'name':'No'},user=3)[0],403)
-        self.assertEqual(self.post('columns/rename',{'column_id':1,'name':'  '},user=2)[0],400)
+        self.assertEqual(self.post('columns/rename',{'column_id':1,'name':'  '},user=1)[0],400)
+        self.assertEqual(self.post('columns/update',{'column_id':1,'name':'Pendientes','color':'#12ab34'},user=2)[0],403)
+        self.assertEqual(self.post('columns/update',{'column_id':1,'name':'Pendientes','color':'red'},user=1)[0],400)
+        self.assertEqual(self.post('columns/update',{'column_id':1,'name':'Pendientes','color':'#12ab34'},user=1)[0],200)
         self.assertEqual(self.post('columns/reorder',{'project_id':1,'order':[3,1]},user=3)[0],403)
         self.assertEqual(self.post('columns/reorder',{'project_id':1,'order':[3,3]},user=2)[0],400)
         self.assertEqual(self.post('columns/reorder',{'project_id':1,'order':[3,2]},user=2)[0],400)
         self.assertEqual(self.post('columns/reorder',{'project_id':1,'order':[3,1]},user=2)[0],200)
         with app.db() as c:
-            columns=c.execute('SELECT id,name FROM columns WHERE project_id=1 ORDER BY position').fetchall()
+            columns=c.execute('SELECT id,name,color FROM columns WHERE project_id=1 ORDER BY position').fetchall()
             self.assertEqual([x['id'] for x in columns],[3,1])
             self.assertEqual(columns[1]['name'],'Pendientes')
+            self.assertEqual(columns[1]['color'],'#12ab34')
+            c.execute("UPDATE members SET role='admin' WHERE project_id=1 AND user_id=2")
+        self.assertEqual(self.post('columns/update',{'column_id':1,'name':'Administrada','color':'#ABCDEF'},user=2)[0],200)
+        self.assertEqual(self.post('columns/update',{'column_id':2,'name':'Otro tablero','color':'#ABCDEF'},user=2)[0],403)
+
+    def test_column_colors_migrate_and_survive_restart(self):
+        old=app.DB
+        with tempfile.TemporaryDirectory() as temp:
+            try:
+                app.DB=os.path.join(temp,'legacy.db')
+                with sqlite3.connect(app.DB) as c:
+                    c.execute("CREATE TABLE projects(id INTEGER PRIMARY KEY,name TEXT NOT NULL,color TEXT NOT NULL DEFAULT '#7765d7',description TEXT NOT NULL DEFAULT '')")
+                    c.execute('CREATE TABLE columns(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,name TEXT NOT NULL,position INTEGER NOT NULL)')
+                    c.execute("INSERT INTO projects(id,name) VALUES(1,'Proyecto')")
+                    for i,position in enumerate((4,8,12,18,21)):
+                        c.execute('INSERT INTO columns(id,project_id,name,position) VALUES(?,1,?,?)',(i+1,str(i),position))
+                app.init()
+                with app.db() as c:
+                    self.assertEqual([r['color'] for r in c.execute('SELECT color FROM columns ORDER BY position')],list(app.COLUMN_COLORS)+[app.COLUMN_COLORS[0]])
+                    c.execute("UPDATE columns SET color='#112233' WHERE id=2")
+                    c.execute('UPDATE columns SET color=NULL WHERE id=3')
+                app.init();app.init()
+                with app.db() as c:
+                    colors=[r['color'] for r in c.execute('SELECT color FROM columns ORDER BY position')]
+                    self.assertEqual(colors[1],'#112233');self.assertEqual(colors[2],app.COLUMN_COLORS[2])
+            finally: app.DB=old
+
+    def test_new_columns_get_individual_default_colors(self):
+        status,project=self.post('projects',{'name':'Colores'})
+        self.assertEqual(status,200)
+        self.assertEqual(self.post('columns',{'project_id':project['id'],'name':'Quinta'})[0],200)
+        with app.db() as c:
+            colors=[r['color'] for r in c.execute('SELECT color FROM columns WHERE project_id=? ORDER BY position',(project['id'],))]
+        self.assertEqual(colors,list(app.COLUMN_COLORS)+[app.COLUMN_COLORS[0]])
 
     def test_monthly_analytics_and_access(self):
         with app.db() as c:
@@ -502,6 +539,58 @@ class TaskTypesTest(unittest.TestCase):
         for path in ('/','/app.js','/style.css','/favicon.svg'):
             self.assertEqual(client.get(path).status_code,200)
         self.assertEqual(client.get('/t/no-es-uuid').status_code,404)
+
+    def test_task_titles_reject_line_breaks_on_create_and_update(self):
+        for title in ('Uno\nDos','Uno\rDos','Uno\vDos','Uno\fDos','Uno\u0085Dos','Uno\u2028Dos','Uno\u2029Dos'):
+            status,result=self.post('tasks',{'title':title,'project_id':1,'column_id':1},user=2)
+            self.assertEqual(status,400);self.assertIn('saltos de línea',result['error'])
+        tid=self.post('tasks',{'title':'Título válido','project_id':1,'column_id':1},user=2)[1]['id']
+        status,result=self.post('task/update',{'id':tid,'title':'Otro\nTítulo','priority':'Alta'},user=2)
+        self.assertEqual(status,400);self.assertIn('saltos de línea',result['error'])
+        with app.db() as c:
+            task=c.execute('SELECT title,priority FROM tasks WHERE id=?',(tid,)).fetchone()
+            self.assertEqual((task['title'],task['priority']),('Título válido','Normal'))
+            c.execute('UPDATE tasks SET title=? WHERE id=?',('Antiguo\ntítulo',tid))
+        self.assertEqual(self.post('task/update',{'id':tid,'priority':'Alta'},user=2)[0],200)
+
+    def test_public_project_ids_are_stable_and_private(self):
+        app.init();app.init()
+        with app.db() as c:
+            before={r['id']:r['public_id'] for r in c.execute('SELECT id,public_id FROM projects')}
+        self.assertEqual(len(set(before.values())),len(before))
+        for value in before.values(): self.assertEqual(uuid.UUID(value).version,4)
+        self.assertEqual({p['public_id'] for p in self.get('data',2)[1]['projects']},{before[1]})
+        status,created=self.post('projects',{'name':'Nuevo'})
+        self.assertEqual(status,200);self.assertEqual(uuid.UUID(created['public_id']).version,4)
+        app.init()
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT public_id FROM projects WHERE id=?',(created['id'],)).fetchone()[0],created['public_id'])
+            self.assertEqual({r['id']:r['public_id'] for r in c.execute('SELECT id,public_id FROM projects WHERE id IN (1,2)')},before)
+            with self.assertRaises(sqlite3.IntegrityError):
+                c.execute('UPDATE projects SET public_id=? WHERE id=?',(before[1],2))
+
+    def test_board_link_routes_serve_application(self):
+        client=app.app.test_client()
+        board=str(uuid.uuid4());task=str(uuid.uuid4())
+        for path in ('/board/'+board,'/board/no-project','/board/'+board+'/task/'+task,'/board/no-project/task/'+task):
+            response=client.get(path)
+            self.assertEqual(response.status_code,200);self.assertIn(b'<div id="app">',response.data)
+            self.assertIn('no-cache',response.headers['Cache-Control'])
+        for path in ('/board/1','/board/nope','/board/1/task/'+task,'/board/'+board+'/task/1'):
+            self.assertEqual(client.get(path).status_code,404)
+
+    def test_my_tasks_uses_only_tasks_accessible_to_user(self):
+        visible=self.post('tasks',{'title':'Visible','project_id':1,'column_id':1})[1]['id']
+        hidden=self.post('tasks',{'title':'Sin acceso','project_id':2,'column_id':2})[1]['id']
+        orphan=self.post('tasks',{'title':'Sin proyecto'})[1]['id']
+        subtask=self.post('tasks',{'title':'Heredada','parent_id':visible})[1]['id']
+        for tid in (visible,hidden,orphan,subtask): self.post('task/update',{'id':tid,'assignee_id':2})
+        tasks={t['id']:t for t in self.get('data',2)[1]['tasks']}
+        self.assertTrue({visible,orphan,subtask}<=tasks.keys());self.assertNotIn(hidden,tasks)
+        self.assertFalse(tasks[orphan]['has_projects']);self.assertEqual(tasks[subtask]['inherited_project_ids'],[1])
+        client=app.app.test_client();response=client.get('/my-tasks')
+        self.assertEqual(response.status_code,200);self.assertIn(b'<div id="app">',response.data)
+        self.assertEqual(client.get('/api/data').status_code,401)
 
     def test_flask_authentication_cookie_and_request_limits(self):
         client=app.app.test_client()

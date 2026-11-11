@@ -17,6 +17,7 @@ PORT = SETTINGS['port']
 STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
 TEMPLATE_DIR = Path(__file__).resolve().parent / 'templates'
+COLUMN_COLORS = ('#a5a3ab', '#e7aa69', '#aa91dd', '#78b99a')
 
 def running_version():
     try:
@@ -40,11 +41,21 @@ def init():
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#7765d7', description TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS members(project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('admin','editor','viewer')), PRIMARY KEY(project_id,user_id));
-        CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, position INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, position INTEGER NOT NULL, color TEXT);
         CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL, due_date TEXT, priority TEXT NOT NULL DEFAULT 'Normal', parent_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS placements(task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, column_id INTEGER NOT NULL REFERENCES columns(id) ON DELETE CASCADE, position INTEGER NOT NULL, PRIMARY KEY(task_id,project_id));
         CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, message TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);''')
+        if 'color' not in {r['name'] for r in c.execute('PRAGMA table_info(columns)')}:
+            c.execute('ALTER TABLE columns ADD COLUMN color TEXT')
+        for project in c.execute('SELECT DISTINCT project_id FROM columns WHERE color IS NULL').fetchall():
+            for i,column in enumerate(c.execute('SELECT id,color FROM columns WHERE project_id=? ORDER BY position,id',(project['project_id'],)).fetchall()):
+                if column['color'] is None: c.execute('UPDATE columns SET color=? WHERE id=? AND color IS NULL',(COLUMN_COLORS[i%len(COLUMN_COLORS)],column['id']))
+        if 'public_id' not in {r['name'] for r in c.execute('PRAGMA table_info(projects)')}:
+            c.execute('ALTER TABLE projects ADD COLUMN public_id TEXT')
+        c.execute('CREATE UNIQUE INDEX IF NOT EXISTS projects_public_id_unique ON projects(public_id)')
+        for project in c.execute("SELECT id FROM projects WHERE public_id IS NULL OR public_id=''").fetchall():
+            c.execute('UPDATE projects SET public_id=? WHERE id=?',(str(uuid.uuid4()),project['id']))
         if 'blocked' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
             c.execute('ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0')
         if 'must_change_password' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
@@ -157,13 +168,22 @@ def text_field(body,key):
     if not isinstance(value,str): raise ValueError(f"El campo '{key}' debe ser texto")
     return value
 
+def task_title(value):
+    if not isinstance(value,str) or not value.strip(): raise ValueError('El nombre es obligatorio')
+    if re.search(r'[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]',value): raise ValueError('El nombre de la tarea no puede contener saltos de línea')
+    return value.strip()
+
 @app.errorhandler(413)
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
 
 @app.get('/')
+@app.get('/my-tasks')
 @app.get('/t/<public_id>')
-def index(public_id=None):
+@app.get('/board/<board_id>')
+@app.get('/board/<board_id>/task/<public_id>')
+def index(public_id=None,board_id=None):
     if public_id is not None and not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',public_id): abort(404)
+    if board_id is not None and board_id!='no-project' and not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',board_id): abort(404)
     html=(TEMPLATE_DIR/'index.html').read_text(encoding='utf-8')
     response=make_response(render_template_string(html,style_version=asset_version('style.css'),
                            script_version=asset_version('app.js'),favicon_version=asset_version('favicon.svg')))
@@ -307,11 +327,11 @@ def api_post():
             if flags['must_change_password']:
                 return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
             g.disabled_automations=[]
-            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block'):
+            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete'):
                 c.execute('BEGIN IMMEDIATE')
             if path in ('/api/workspace/update','/api/workspace/block','/api/profile','/api/users'):
                 result=post_workspace(c,u,path,b)
-            elif path in ('/api/projects','/api/projects/update','/api/members','/api/columns','/api/columns/rename','/api/columns/reorder'):
+            elif path in ('/api/projects','/api/projects/update','/api/members','/api/columns','/api/columns/rename','/api/columns/update','/api/columns/reorder','/api/columns/delete'):
                 result=post_projects(c,u,path,b)
             elif path in ('/api/tasks','/api/task-types','/api/task-types/delete','/api/task-types/update','/api/task/type-status'):
                 result=post_task_types(c,u,path,b)
@@ -365,6 +385,11 @@ def automate(c,tid,events,uid,project=None):
         project=row['project_id'] if row else None
     g.disabled_automations.extend(automations.run(c,tid,project,events,uid,now,record,metric_event))
 
+def delete_task(c,tid,uid):
+    task=c.execute('SELECT title,parent_id FROM tasks WHERE id=?',(tid,)).fetchone()
+    if task['parent_id']: record(c,task['parent_id'],uid,'eliminó la subtarea '+task['title'])
+    c.execute('DELETE FROM tasks WHERE id=?',(tid,))
+
 def post_workspace(c,u,path,b):
             if path=='/api/workspace/update':
                 if not u['admin']: raise PermissionError('Solo un administrador del workspace puede cambiar el nombre')
@@ -409,11 +434,12 @@ def post_projects(c,u,path,b):
                 if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear proyectos')
                 name=b.get('name','').strip()
                 if not name: raise ValueError('El nombre es obligatorio')
-                p=c.execute('INSERT INTO projects(name,color,description) VALUES(?,?,?)',(name,b.get('color','#7765d7'),b.get('description',''))).lastrowid
+                public_id=str(uuid.uuid4())
+                p=c.execute('INSERT INTO projects(name,color,description,public_id) VALUES(?,?,?,?)',(name,b.get('color','#7765d7'),b.get('description',''),public_id)).lastrowid
                 c.execute('INSERT INTO members VALUES(?,?,?)',(p,u['id'],'admin'))
                 ensure_base_type(c,p)
-                for i,n in enumerate(['Por hacer','En progreso','En revisión','Completado']): c.execute('INSERT INTO columns(project_id,name,position) VALUES(?,?,?)',(p,n,i))
-                c.commit(); return respond({'id':p})
+                for i,n in enumerate(['Por hacer','En progreso','En revisión','Completado']): c.execute('INSERT INTO columns(project_id,name,position,color) VALUES(?,?,?,?)',(p,n,i,COLUMN_COLORS[i]))
+                c.commit(); return respond({'id':p,'public_id':public_id})
             elif path=='/api/projects/update':
                 p=int(b['project_id']); project=c.execute('SELECT id,color FROM projects WHERE id=?',(p,)).fetchone()
                 if not project: raise ValueError('Proyecto no encontrado')
@@ -434,14 +460,50 @@ def post_projects(c,u,path,b):
                 p=int(b['project_id']); name=b.get('name','').strip()
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
                 if not name: raise ValueError('El nombre es obligatorio')
-                c.execute('INSERT INTO columns(project_id,name,position) VALUES(?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM columns WHERE project_id=?))',(p,name,p))
-            elif path=='/api/columns/rename':
-                col=int(b['column_id']); name=str(b.get('name','')).strip()
+                c.execute('''INSERT INTO columns(project_id,name,position,color)
+                             SELECT ?,?,COALESCE(MAX(position),-1)+1,
+                             CASE COUNT(*) % 4 WHEN 0 THEN ? WHEN 1 THEN ? WHEN 2 THEN ? ELSE ? END
+                             FROM columns WHERE project_id=?''',(p,name,*COLUMN_COLORS,p))
+            elif path in ('/api/columns/rename','/api/columns/update'):
+                col=int(b['column_id']); name=b.get('name')
                 column=c.execute('SELECT * FROM columns WHERE id=?',(col,)).fetchone()
                 if not column: raise ValueError('Columna no encontrada')
-                if role(c,u,column['project_id']) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
+                if role(c,u,column['project_id'])!='admin': raise PermissionError('Solo un administrador del proyecto puede editar la columna')
+                if not isinstance(name,str): raise ValueError('El nombre es obligatorio')
+                name=name.strip();color=b.get('color',column['color'] or COLUMN_COLORS[0])
                 if not name or len(name)>100: raise ValueError('El nombre debe tener entre 1 y 100 caracteres')
-                c.execute('UPDATE columns SET name=? WHERE id=?',(name,col))
+                if not isinstance(color,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',color): raise ValueError('Color inválido')
+                c.execute('UPDATE columns SET name=?,color=? WHERE id=?',(name,color,col))
+            elif path=='/api/columns/delete':
+                col=int(b['column_id']);column=c.execute('SELECT * FROM columns WHERE id=?',(col,)).fetchone()
+                if not column: raise ValueError('Columna no encontrada')
+                project=column['project_id']
+                if role(c,u,project)!='admin': raise PermissionError('Solo un administrador del proyecto puede eliminar la columna')
+                expected=b.get('task_ids')
+                if not isinstance(expected,list) or any(type(x) is not int for x in expected) or len(expected)!=len(set(expected)): raise ValueError('Lista de tareas inválida')
+                tasks=[r['task_id'] for r in c.execute('SELECT task_id FROM placements WHERE project_id=? AND column_id=? ORDER BY position,task_id',(project,col))]
+                if set(tasks)!=set(expected): raise ValueError('Las tareas de la columna cambiaron; vuelve a abrir la confirmación')
+                action=b.get('action')
+                if tasks and action not in ('move','remove','delete'): raise ValueError('Elige qué hacer con las tareas')
+                if not tasks and action not in (None,'move','remove','delete'): raise ValueError('Opción inválida')
+                if action=='move':
+                    dest=b.get('destination_id')
+                    if type(dest) is not int or dest==col or not c.execute('SELECT 1 FROM columns WHERE id=? AND project_id=?',(dest,project)).fetchone(): raise ValueError('Selecciona otra columna del mismo tablero')
+                    position=c.execute('SELECT COALESCE(MAX(position),-1)+1 FROM placements WHERE project_id=? AND column_id=?',(project,dest)).fetchone()[0]
+                    destination=c.execute('SELECT name FROM columns WHERE id=?',(dest,)).fetchone()['name']
+                    for tid in tasks:
+                        c.execute('UPDATE placements SET column_id=?,position=? WHERE task_id=? AND project_id=?',(dest,position,tid,project));position+=1
+                        record(c,tid,u['id'],'movió a '+destination+' al eliminar la columna '+column['name'])
+                elif action=='remove':
+                    for tid in tasks:
+                        c.execute('DELETE FROM placements WHERE task_id=? AND project_id=?',(tid,project))
+                        record(c,tid,u['id'],'quitó la tarea de un proyecto al eliminar la columna '+column['name'])
+                elif action=='delete':
+                    for tid in tasks: delete_task(c,tid,u['id'])
+                c.execute('DELETE FROM columns WHERE id=?',(col,))
+                g.disabled_automations.extend(automations.disable_invalid(c))
+                if action=='move':
+                    for tid in tasks: automate(c,tid,[('column',col,dest)],u['id'],project)
             elif path=='/api/columns/reorder':
                 p=int(b['project_id']); order=b.get('order')
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
@@ -452,8 +514,7 @@ def post_projects(c,u,path,b):
 
 def post_task_types(c,u,path,b):
             if path=='/api/tasks':
-                title=b.get('title','').strip(); parent=b.get('parent_id') or None
-                if not title: raise ValueError('El nombre es obligatorio')
+                title=task_title(b.get('title','')); parent=b.get('parent_id') or None
                 if parent:
                     parent=int(parent)
                     if not can_task(c,u,parent,True): raise PermissionError('Sin permiso para editar la tarea principal')
@@ -559,9 +620,7 @@ def post_tasks(c,u,path,b):
             elif path=='/api/task/delete':
                 tid=int(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')
-                task=c.execute('SELECT title,parent_id FROM tasks WHERE id=?',(tid,)).fetchone()
-                if task['parent_id']: record(c,task['parent_id'],u['id'],'eliminó la subtarea '+task['title'])
-                c.execute('DELETE FROM tasks WHERE id=?',(tid,))
+                delete_task(c,tid,u['id'])
             elif path=='/api/task/update':
                 tid=int(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
@@ -571,8 +630,7 @@ def post_tasks(c,u,path,b):
                 labels={'title':'nombre','description':'descripción','assignee_id':'responsable','due_date':'fecha límite','priority':'prioridad'}
                 for key,label in labels.items():
                     if key in b:
-                        val=b[key] or None if key in ('assignee_id','due_date') else str(b[key]).strip()
-                        if key=='title' and not val: raise ValueError('El nombre es obligatorio')
+                        val=task_title(b[key]) if key=='title' else (b[key] or None if key in ('assignee_id','due_date') else str(b[key]).strip())
                         if key=='description':
                             fmt='html' if b.get('description_format')=='html' else 'plain'
                             if fmt=='html': val=sanitize_description(val)

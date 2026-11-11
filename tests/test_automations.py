@@ -26,7 +26,7 @@ class AutomationsIntegrationTest(unittest.TestCase):
                 c.execute('INSERT INTO projects(id,name) VALUES(?,?)', (p, str(p)))
                 c.execute('INSERT INTO columns(id,project_id,name,position) VALUES(?,?,?,0)', (p, p, str(p)))
                 app.ensure_base_type(c, p)
-            c.execute("INSERT INTO columns VALUES(3,1,'Destino',1)")
+            c.execute("INSERT INTO columns(id,project_id,name,position) VALUES(3,1,'Destino',1)")
             c.execute("INSERT INTO members VALUES(1,2,'editor')")
             c.execute("INSERT INTO members VALUES(1,3,'viewer')")
             self.typ = app.ensure_base_type(c, 1)
@@ -291,7 +291,7 @@ class AutomationsIntegrationTest(unittest.TestCase):
         tid = self.task(project_id=1, column_id=1)
         self.post('task/project', {'id': tid, 'project_id': 2})
         with app.db() as c:
-            c.execute("INSERT INTO columns VALUES(4,2,'Destino',1)")
+            c.execute("INSERT INTO columns(id,project_id,name,position) VALUES(4,2,'Destino',1)")
             type_two = app.ensure_base_type(c, 2)
         self.post('task/move', {'id': tid, 'project_id': 2, 'column_id': 4, 'order': [tid]})
         self.assertEqual(self.runs(2), [])
