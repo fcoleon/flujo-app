@@ -223,6 +223,17 @@ def session_response(token):
     response.set_cookie('session',token,httponly=True,samesite='Strict',secure=request.is_secure,path='/')
     return response
 
+def rotate_session(c,user_id):
+    c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+    token=secrets.token_urlsafe(32)
+    c.execute('INSERT INTO sessions VALUES(?,?)',(token,user_id))
+    return token
+
+def text_field(body,key):
+    value=body.get(key)
+    if not isinstance(value,str): raise ValueError(f"El campo '{key}' debe ser texto")
+    return value
+
 @app.errorhandler(413)
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
 
@@ -315,24 +326,27 @@ def api_post():
     path=request.path
     try:
         raw=request.get_data(cache=False)
-        b=json.loads(raw or b'{}')
+        if request.mimetype!='application/json': return respond({'error':'Se requiere application/json'},415)
+        b=json.loads(raw)
         if not isinstance(b,dict): raise ValueError('Datos inválidos')
         with closing(db()) as c, c:
             u=current_user(c)
             if path in ('/api/login','/api/setup','/api/register'):
                 if path=='/api/register' and not SETTINGS['allow_self_registration']:
                     return respond({'error':'El registro está deshabilitado'},403)
+                username=text_field(b,'username').strip().lower(); pw=text_field(b,'password')
                 if path in ('/api/setup','/api/register'):
                     # Serializa la creación de la primera cuenta entre workers.
                     c.execute('BEGIN IMMEDIATE')
                     exists=bool(c.execute('SELECT 1 FROM users').fetchone())
                     if path=='/api/setup' and exists: raise ValueError('La aplicación ya está configurada')
                     if path=='/api/register' and not exists: raise ValueError('Primero se debe crear la cuenta administradora')
-                    name=b.get('name','').strip(); username=b.get('username','').strip().lower(); pw=b.get('password','')
+                    name=text_field(b,'name').strip()
                     if not name or not username or len(pw)<8: raise ValueError('Completa los campos; la contraseña debe tener al menos 8 caracteres')
                     s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin) VALUES(?,?,?,?,?)',(name,username,hashpw(pw,s),s,int(path=='/api/setup')))
-                row=c.execute('SELECT * FROM users WHERE username=?',(b.get('username','').strip().lower(),)).fetchone()
-                if not row or not hmac.compare_digest(row['password'],hashpw(b.get('password',''),row['salt'])): return respond({'error':'Usuario o contraseña incorrectos'},401)
+                row=c.execute('SELECT * FROM users WHERE username=?',(username,)).fetchone()
+                password_hash=hashpw(pw,row['salt'] if row else '00'*16)
+                if not hmac.compare_digest(row['password'] if row else '0'*64,password_hash) or not row: return respond({'error':'Usuario o contraseña incorrectos'},401)
                 token=secrets.token_urlsafe(32); c.execute('INSERT INTO sessions VALUES(?,?)',(token,row['id'])); c.commit()
                 return session_response(token)
             if not u: return respond({'error':'Inicia sesión'},401)
@@ -354,7 +368,7 @@ def api_post():
                 if not hmac.compare_digest(credentials['password'],hashpw(current,credentials['salt'])): raise ValueError('La contraseña actual es incorrecta')
                 if hmac.compare_digest(credentials['password'],hashpw(new,credentials['salt'])): raise ValueError('La nueva contraseña debe ser distinta de la actual')
                 salt=secrets.token_hex(16);c.execute('UPDATE users SET password=?,salt=?,must_change_password=0 WHERE id=?',(hashpw(new,salt),salt,u['id']))
-                c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],));token=secrets.token_urlsafe(32);c.execute('INSERT INTO sessions VALUES(?,?)',(token,u['id']));c.commit()
+                token=rotate_session(c,u['id']);c.commit()
                 return session_response(token)
             if flags['must_change_password']:
                 return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
@@ -371,6 +385,10 @@ def api_post():
                 if not c.execute('SELECT 1 FROM users WHERE id=?',(target,)).fetchone(): raise ValueError('Usuario no encontrado')
                 c.execute('UPDATE users SET blocked=? WHERE id=?',(int(blocked),target))
             elif path=='/api/profile':
+                c.execute('BEGIN IMMEDIATE')
+                u=current_user(c)
+                if not u: return respond({'error':'Inicia sesión'},401)
+                if c.execute('SELECT blocked FROM users WHERE id=?',(u['id'],)).fetchone()['blocked']: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
                 name=b.get('name')
                 if not isinstance(name,str) or not name.strip() or len(name.strip())>120: raise ValueError('El nombre debe tener entre 1 y 120 caracteres')
                 current=b.get('current_password',''); new=b.get('new_password',''); confirmation=b.get('confirm_password','')
@@ -383,6 +401,9 @@ def api_post():
                     salt=secrets.token_hex(16)
                     c.execute('UPDATE users SET password=?,salt=? WHERE id=?',(hashpw(new,salt),salt,u['id']))
                 c.execute('UPDATE users SET name=? WHERE id=?',(name.strip(),u['id']))
+                if current or new or confirmation:
+                    token=rotate_session(c,u['id']);c.commit()
+                    return session_response(token)
             elif path=='/api/users':
                 if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear usuarios')
                 name=b.get('name','').strip(); username=b.get('username','').strip().lower(); pw=b.get('password','')

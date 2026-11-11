@@ -530,6 +530,8 @@ def main(argv=None):
     nginx_update = plan_nginx_socket_update(socket_path) if args.mode == 'update' else None
     if args.mode == 'update': nginx_update = plan_nginx_static_update(nginx_update)
     if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path)
+    if args.mode == 'update' or args.skip_nginx:
+        print('Aviso: verifica el límite de acceso a /api/login en Nginx; consulta deploy/README.md.', flush=True)
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
     ensure_socket_directory(user,group,socket_path,install=args.mode == 'install' or missing_socket_config)
     if args.mode=='update' and missing_socket_config and socket_path.parent.is_dir() and str(socket_path.parent).startswith('/run/'):

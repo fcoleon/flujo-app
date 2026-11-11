@@ -4,7 +4,7 @@ let taskTab='detalle', boardView='board', statsMonth='', statsType='', statsRequ
 const cardMotion=new WeakMap();
 let columnDrag=null, columnGhost=null, columnSource=null, columnSaving=false;
 const columnMotion=new WeakMap();
-async function api(path,body){let r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});let d=await r.json();if(!r.ok){if(d.blocked)showBlocked();else if(d.password_change_required)showPasswordChange();throw Error(d.error||'Ocurrió un error')}return d}
+async function api(path,body){let r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(r.status===429)throw Error('Demasiados intentos. Espera un momento y vuelve a intentarlo.');let d=await r.json();if(!r.ok){if(d.blocked)showBlocked();else if(d.password_change_required)showPasswordChange();throw Error(d.error||'Ocurrió un error')}return d}
 function toast(s){$('#toast').textContent=s;$('#toast').classList.add('show');setTimeout(()=>$('#toast').classList.remove('show'),3000)}
 function modal(html,wide=false){
   closeStatusMenu();

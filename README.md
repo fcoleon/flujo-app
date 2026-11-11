@@ -40,6 +40,8 @@ Para ejecutar las pruebas automatizadas:
 python -m unittest discover -s tests -v
 ```
 
+Las peticiones POST a la API usan `Content-Type: application/json` y un objeto JSON como cuerpo; para operaciones sin campos se envía `{}`. Un tipo de contenido incorrecto devuelve `415` y JSON inválido o una raíz que no sea un objeto devuelve `400`, con un mensaje en `error`. Al agregar o modificar operaciones, valida los tipos y valores de sus campos antes de usarlos y conserva el mismo formato de error; los campos desconocidos se ignoran.
+
 ## Funcionalidades
 
 - Proyectos con tableros Kanban, columnas configurables y tareas que pueden pertenecer a varios proyectos, con posición independiente en cada uno.

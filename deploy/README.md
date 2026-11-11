@@ -51,6 +51,20 @@ location ^~ /static/ {
 
 Reemplaza la ruta del ejemplo por la ubicación real. El usuario de Nginx debe poder atravesar todos los directorios superiores y leer los archivos de `static/`. Después ejecuta `sudo nginx -t && sudo systemctl reload nginx`. Mientras no se incluya, Flask seguirá entregando los archivos como alternativa.
 
+### Límite de intentos de acceso
+
+La plantilla de instalaciones nuevas limita `/api/login` a 5 peticiones por minuto por IP, con una ráfaga de 3; las solicitudes excedentes reciben HTTP 429. Cuenta tanto accesos correctos como fallidos, y usuarios de una misma IP comparten el límite.
+
+Para una instalación existente o con `--skip-nginx`, agrega una sola vez en el contexto `http` (fuera de `server`, por ejemplo en el archivo del sitio incluido por Nginx):
+
+```nginx
+limit_req_zone $binary_remote_addr zone=flujo_login:10m rate=5r/m;
+```
+
+En cada bloque `server` que atienda la aplicación, agrega `location = /api/login` de `deploy/nginx.conf.template`, reemplazando `@@SOCKET_PATH@@` por la ruta real del socket y conservando los encabezados y ajustes de proxy que necesite el sitio. No dupliques la zona si ya está definida. Comprueba con `sudo nginx -t` y luego recarga con `sudo systemctl reload nginx`.
+
+Si hay otro proxy delante, configura la IP real solo para proxies de confianza; de lo contrario todos los usuarios podrían compartir el mismo límite. El acceso directo a Flask o al socket no pasa por este control.
+
 La configuración inicial de Nginx usa HTTP. Restringe el acceso en el security group, crea la primera cuenta administradora y configura HTTPS antes de usar contraseñas desde la red. Con Certbot instalado:
 
 ```sh

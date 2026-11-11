@@ -40,6 +40,10 @@ class DeploymentConfigTest(unittest.TestCase):
         self.assertIn('server_name tareas.ejemplo.com;', nginx)
         self.assertIn('proxy_pass http://unix:/run/flujo/flujo.sock;', nginx)
         self.assertIn('proxy_set_header Host $host;', nginx)
+        self.assertIn('limit_req_zone $binary_remote_addr zone=flujo_login:10m rate=5r/m;', nginx)
+        self.assertIn('location = /api/login {', nginx)
+        self.assertIn('limit_req zone=flujo_login burst=3 nodelay;', nginx)
+        self.assertIn('limit_req_status 429;', nginx)
         self.assertNotIn('@@', supervisor + nginx)
 
     def test_invalid_configuration_values_are_rejected(self):

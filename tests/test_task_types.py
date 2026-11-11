@@ -159,6 +159,52 @@ class TaskTypesTest(unittest.TestCase):
             self.assertEqual(row['password'],app.hashpw('nueva1234',row['salt']))
             self.assertNotEqual(row['password'],app.hashpw('anterior123',row['salt']))
 
+    def test_profile_password_rotates_sessions_atomically(self):
+        salt='ab'*16
+        with app.db() as c:
+            c.execute('UPDATE users SET salt=?,password=? WHERE id=3',(salt,app.hashpw('anterior123',salt)))
+            c.execute("INSERT INTO sessions VALUES('other-session',3)")
+            c.execute("INSERT INTO sessions VALUES('another-user',2)")
+        client=self.client_for(3)
+        self.assertEqual(client.post('/api/profile',json={'name':'Lector'}).status_code,200)
+        self.assertEqual(client.get_cookie('session').value,'test-session-3')
+        with patch.object(app,'rotate_session',side_effect=ValueError('fallo')):
+            failed=client.post('/api/profile',json={'name':'No guardar','current_password':'anterior123','new_password':'nueva1234','confirm_password':'nueva1234'})
+        self.assertEqual(failed.status_code,400)
+        with app.db() as c:
+            row=c.execute('SELECT name,password,salt FROM users WHERE id=3').fetchone()
+            self.assertEqual(row['name'],'Lector')
+            self.assertEqual(row['password'],app.hashpw('anterior123',row['salt']))
+            self.assertIsNotNone(c.execute("SELECT 1 FROM sessions WHERE token='other-session'").fetchone())
+        response=client.post('/api/profile',json={'name':'Lector','current_password':'anterior123','new_password':'nueva1234','confirm_password':'nueva1234'})
+        self.assertEqual(response.status_code,200)
+        token=client.get_cookie('session').value
+        self.assertNotEqual(token,'test-session-3')
+        self.assertEqual(client.get('/api/session').get_json()['user']['id'],3)
+        with app.db() as c:
+            sessions={r['token'] for r in c.execute('SELECT token FROM sessions')}
+        self.assertIn(token,sessions);self.assertIn('another-user',sessions)
+        self.assertNotIn('test-session-3',sessions);self.assertNotIn('other-session',sessions)
+        client.set_cookie('session','other-session')
+        self.assertIsNone(client.get('/api/session').get_json()['user'])
+
+    def test_json_and_login_validation(self):
+        client=app.app.test_client()
+        self.assertEqual(client.post('/api/login',data='{}',content_type='text/plain').status_code,415)
+        for body in ('', '{', 'null', '[]', '"texto"'):
+            with self.subTest(body=body):
+                response=client.post('/api/login',data=body,content_type='application/json')
+                self.assertEqual(response.status_code,400)
+                self.assertIn('error',response.get_json())
+        for body in ({}, {'username':3,'password':'x'}, {'username':'admin','password':None}):
+            with self.subTest(body=body): self.assertEqual(client.post('/api/login',json=body).status_code,400)
+        self.assertEqual(self.client_for(1).post('/api/profile',json={'name':'Admin','new_password':None}).status_code,400)
+        with patch.object(app,'hashpw',return_value='a'*64) as hashed:
+            response=client.post('/api/login',json={'username':'ausente','password':'clave'})
+            self.assertEqual(response.status_code,401)
+            hashed.assert_called_once_with('clave','00'*16)
+        self.assertEqual(self.client_for(1).post('/api/logout',json={}).status_code,200)
+
     def test_workspace_settings_and_blocked_access(self):
         self.assertEqual(self.post('workspace/update',{'name':'Equipo'},user=2)[0],403)
         self.assertEqual(self.post('workspace/update',{'name':'  Equipo  '})[0],200)
