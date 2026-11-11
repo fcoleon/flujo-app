@@ -16,18 +16,27 @@ function showDisabledAutomations(rules){
   dialog.querySelector('ul').innerHTML=disabledAutomationItems();document.body.appendChild(dialog);dialog.querySelector('button').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{dialog.remove();disabledAutomationDialog=null;disabledAutomationQueue=[]});dialog.showModal();dialog.querySelector('button').focus();
 }
 function toast(s){$('#toast').textContent=s;$('#toast').classList.add('show');setTimeout(()=>$('#toast').classList.remove('show'),3000)}
+function setupTaskTitle(input,task){
+  let title=document.createElement('textarea');title.className=input.className;title.name=input.name;title.rows=1;title.required=input.required;title.disabled=input.disabled;title.setAttribute('aria-label','Nombre de la tarea');title.value=task.title;
+  input.replaceWith(title);
+  function resize(){title.style.height='auto';title.style.height=title.scrollHeight+'px'}
+  title.addEventListener('input',resize);resize();
+}
 function modal(html,wide=false){
   closeStatusMenu();
   const container=$('#modal'),replacing=!!container.querySelector('.overlay');
   container.innerHTML=`<div class="overlay${replacing?'':' modal-appear'}"><div class="dialog${wide?' task-dialog':''}">${html}</div></div>`;
+  let title=container.querySelector('input.task-title'),task=data?.tasks.find(t=>t.id===taskId);if(title&&task)setupTaskTitle(title,task);
+  if(container.querySelector('#taskForm')){let task=data?.tasks.find(t=>t.id===taskId);if(task?.public_id)setTaskUrl(task,openingDeepLink)}
   const overlay=$('#modal .overlay');let startedOnOverlay=false,endedOnOverlay=false;
   overlay.addEventListener('pointerdown',e=>{startedOnOverlay=e.isPrimary&&e.button===0&&e.target===overlay},true);
   overlay.addEventListener('pointerup',e=>{endedOnOverlay=e.isPrimary&&e.button===0&&e.target===overlay},true);
   overlay.addEventListener('click',e=>{if(startedOnOverlay&&endedOnOverlay&&e.target===overlay)closeModal();startedOnOverlay=endedOnOverlay=false});
 }
 function waitForModalAnimation(element){return new Promise(resolve=>{let timer=setTimeout(finish,240);function finish(e){if(e&&e.target!==element)return;element.removeEventListener('animationend',finish);clearTimeout(timer);resolve()}element.addEventListener('animationend',finish)})}
-async function closeModal(force=false,animate=!force){
+async function closeModal(force=false,animate=!force,fromHistory=false){
   const container=$('#modal'),overlay=container.querySelector('.overlay'),draft=taskDraft;
+  const taskOpen=!!overlay?.querySelector('#taskForm');
   if(!force&&automationDraft&&automationProject?.role==='admin'&&overlay?.querySelector('#automationForm')&&!confirm('¿Descartar los cambios de la automatización?'))return false;
   const automationReturn=overlay?.querySelector('.automations')?document.querySelector('.automation-entry'):null;
   if(overlay?.querySelector('.automations'))automationDraft=null;
@@ -42,6 +51,7 @@ async function closeModal(force=false,animate=!force){
   }
   if(overlay?.parentNode===container)overlay.remove();
   else if(!overlay)container.innerHTML='';
+  if(taskOpen){taskId=null;if(data&&!fromHistory&&isTaskPath(location.pathname))setBoardUrl(active,true)}
   automationReturn?.focus();
   return true;
 }
@@ -50,7 +60,7 @@ function normalizeSearch(value){return String(value??'').normalize('NFD').replac
 function matchesSearch(t,query){let q=normalizeSearch(query);return !q||normalizeSearch(t.title).includes(q)||normalizeSearch(descriptionText(t)).includes(q)}
 function avatar(name){return `<span class="avatar">${esc((name||'?').split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase())}</span>`}
 function icon(name){return ({grid:'▦',home:'⌂',tasks:'☷',people:'♧',plus:'＋',search:'⌕',more:'···'})[name]||name}
-async function refresh(){data=await api('data');if(active!==0&&!data.projects.some(p=>p.id===active))active=data.projects[0]?.id??(data.tasks.some(t=>!t.has_projects&&!t.parent_id)?0:null);render()}
+async function refresh(){let previous=active;data=await api('data');if(active!==0&&!data.projects.some(p=>p.id===active))active=data.projects[0]?.id??(data.tasks.some(t=>!t.has_projects&&!t.parent_id)?0:null);if(previous!==null&&previous!==active&&location.pathname.startsWith('/board/')){let task=data.tasks.find(t=>t.id===taskId);if(task&&isTaskPath(location.pathname))setTaskUrl(task,true);else setBoardUrl(active,true)}render()}
 async function start(){try{let s=await api('session');if(!s.user)return auth(s.needs_setup,s.allow_self_registration);if(s.blocked)return showBlocked();if(s.must_change_password)return showPasswordChange();await refresh();await openDeepLink()}catch(e){toast(e.message)}}
 function auth(setup,allowSignup=false,signup=false){
   let creating=setup||signup;
@@ -66,13 +76,19 @@ function showPasswordChange(){
 function sidebarCollapsed(){try{let value=localStorage.getItem('flujo:sidebar:'+data.user.id);return value===null?window.matchMedia('(max-width:800px)').matches:value==='collapsed'}catch{return window.matchMedia('(max-width:800px)').matches}}
 function toggleSidebar(){let sidebar=$('#mainSidebar'),button=$('#sidebarToggle'),collapsed=!sidebar.classList.contains('is-collapsed');sidebar.classList.toggle('is-collapsed',collapsed);button.setAttribute('aria-expanded',String(!collapsed));button.setAttribute('aria-label',collapsed?'Expandir menú':'Ocultar menú');button.dataset.tooltip=collapsed?'Expandir menú':'Ocultar menú';button.textContent=collapsed?'›':'‹';try{localStorage.setItem('flujo:sidebar:'+data.user.id,collapsed?'collapsed':'expanded')}catch{}}
 function render(){saveBoardScroll();let p=data.projects.find(x=>x.id===active), orphan=active===0, writable=p&&p.role!=='viewer';let tasks=orphan?data.tasks.filter(t=>!t.has_projects&&!t.parent_id):data.tasks.filter(t=>t.placements.some(x=>x.project_id===active));let count=tasks.length;$('#app').innerHTML=`<div class="shell"><aside id="mainSidebar" class="sidebar ${sidebarCollapsed()?'is-collapsed':''}"><div class="sidebar-top"><div class="brand"><span class="brandmark">✳</span> flujo<span class="brand-dot">.</span></div><button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="mainSidebar" aria-expanded="${!sidebarCollapsed()}" aria-label="${sidebarCollapsed()?'Expandir menú':'Ocultar menú'}" data-tooltip="${sidebarCollapsed()?'Expandir menú':'Ocultar menú'}" onclick="toggleSidebar()">${sidebarCollapsed()?'›':'‹'}</button></div><button type="button" class="workspace" onclick="workspaceSettings()" aria-label="Configurar workspace" data-tooltip="${esc(data.workspace_name)}"><span class="workspace-icon">${esc(data.workspace_name.charAt(0).toUpperCase())}</span><span class="workspace-label"><strong>${esc(data.workspace_name)}</strong><small>Espacio de trabajo</small></span><span class="chevron">⌄</span></button><div class="nav-caption">WORKSPACE</div><button class="nav-item ${orphan?'selected':''}" onclick="selectProject(0)" aria-label="Sin proyecto" data-tooltip="Sin proyecto"><span>${icon('tasks')}</span><span class="nav-label">Sin proyecto</span><em>${data.tasks.filter(t=>!t.has_projects&&!t.parent_id).length}</em></button><div class="nav-caption project-caption">PROYECTOS ${data.user.admin?'<button class="create-project-control" onclick="newProject()" aria-label="Crear proyecto" data-tooltip="Crear proyecto">＋</button>':''}</div>${data.user.admin?'<button class="sidebar-add-project create-project-control" onclick="newProject()" aria-label="Crear proyecto" data-tooltip="Crear proyecto">＋</button>':''}<div class="project-list">${data.projects.map(x=>`<button class="nav-item ${active===x.id?'selected':''}" aria-label="${esc(x.name)}" data-tooltip="${esc(x.name)}" onclick="selectProject(${x.id})"><i style="background:${esc(x.color)}"></i><span class="project-name">${esc(x.name)}</span></button>`).join('')||'<div class="empty-nav">Aún no hay proyectos</div>'}</div><div class="sidebar-bottom"><div class="profile"><button type="button" class="profile-control" onclick="editProfile()" aria-label="Mi perfil" data-tooltip="Mi perfil">${avatar(data.user.name)}<span class="profile-info"><strong>${esc(data.user.name)}</strong><small>${data.user.admin?'Admin del workspace':'Miembro'}</small></span></button><button class="logout-control" aria-label="Cerrar sesión" data-tooltip="Cerrar sesión" onclick="logout()">↪</button></div></div></aside><main class="${p?'board-main':''}"><header class="topbar"><div class="breadcrumb">${esc(data.workspace_name)} <span>/</span> <strong>${esc(orphan?'Sin proyecto':p?.name||'Inicio')}</strong></div><div class="top-actions">${(p||orphan)&&boardView==='board'?`<label class="search top-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Buscar tareas del tablero por nombre o descripción" placeholder="Buscar en este tablero" value="${esc(filter)}" oninput="filter=this.value; renderBoard()"></label>`:''}<span class="today">${new Intl.DateTimeFormat('es-CL',{day:'numeric',month:'long',year:'numeric'}).format(new Date())}</span>${avatar(data.user.name)}</div></header>${!p&&!orphan?`<div class="welcome"><div class="eyebrow">TU ESPACIO DE TRABAJO</div><h1>Todo empieza con un proyecto.</h1><p>Reúne las tareas y a tu equipo en un solo lugar.</p>${data.user.admin?'<button class="primary" onclick="newProject()">＋ Crear proyecto</button>':''}</div>`:`<section class="content ${p?(boardView==='board'?'board-layout':'stats-layout'):''}"><div class="project-heading"><div class="project-heading-main"><div class="project-title-row"><h1>${orphan?'Sin proyecto':esc(p.name)}${p?.role==='admin'?` <button class="project-settings-trigger" type="button" aria-label="Editar tablero" data-tooltip="Editar tablero" onclick="editProject()">⚙</button>`:''}</h1>${p?.role==='viewer'?`<span class="board-readonly"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Solo tienes acceso para ver este board, no puedes editar, crear ni borrar.</span></span>`:''}</div><p>${orphan?'Tareas que aún no pertenecen a un proyecto.':esc(p.description||'')}</p></div><div class="heading-actions">${orphan&&data.user.admin?'<button class="primary" onclick="newOrphan()">＋ &nbsp; Nueva tarea</button>':''}${p?`<div class="member-stack">${p.members.slice(0,3).map(m=>avatar(m.name)).join('')}</div>${writable?'<button class="primary" onclick="newTask()">＋ &nbsp; Nueva tarea</button>':''}`:''}</div></div><div class="tabs"><button class="tab ${boardView==='board'?'active':''}" onclick="setBoardView('board')">▦ &nbsp; Tablero</button>${p?.role==='admin'?`<button class="tab ${boardView==='stats'?'active':''}" onclick="setBoardView('stats')">▥ &nbsp; Estadísticas</button>`:''}${boardView==='board'?`<div class="tab-right"><span id="boardCount">${count} ${count===1?'tarea':'tareas'}</span></div>`:''}</div><div id="board" ${p&&boardView==='stats'?'tabindex="0" role="region" aria-label="Contenido de estadísticas"':''}></div></section>`}</main></div>`;if(p||orphan){if(boardView==='stats'&&p?.role==='admin')renderStats();else renderBoard()}}
-function selectProject(id){active=id;filter='';boardView='board';statsType='';if(/^\/t\//.test(location.pathname))history.replaceState(null,'','/');render()}
-function setBoardView(view){boardView=view;render()}
+let currentRoute=location.pathname+location.search,openingDeepLink=false;
+function boardPath(id){return id===0?'/board/no-project':data.projects.find(p=>p.id===id)?.public_id?'/board/'+data.projects.find(p=>p.id===id).public_id:'/'}
+function setBoardUrl(id,replace=false){let url=boardPath(id);if(location.pathname+location.search!==url)history[replace?'replaceState':'pushState'](null,'',url);currentRoute=url}
+function isTaskPath(path){return /^\/t\//.test(path)||/^\/board\/[^/]+\/task\//.test(path)}
+function selectProject(id){active=id;filter='';boardView='board';statsType='';setBoardUrl(id);render()}
+function setBoardView(view){closeStatusMenu();endListDrag();boardView=view;render()}
 function taskContextProjects(task){
   if(!task.has_projects)return [];
   return [...new Set([...task.placements.map(x=>x.project_id),...(task.inherited_project_ids||[])])].filter(id=>data.projects.some(p=>p.id===id));
 }
-function taskLink(task){let link=new URL('/t/'+task.public_id,location.origin),projects=taskContextProjects(task),project=projects.includes(active)?active:projects[0];if(project)link.searchParams.set('project',String(project));return link.href}
+function taskPath(task){let projects=taskContextProjects(task),project=projects.includes(active)?active:(projects[0]??0);return boardPath(project)+'/task/'+task.public_id}
+function taskLink(task){return new URL(taskPath(task),location.origin).href}
+function setTaskUrl(task,replace=false){let url=taskPath(task),sameTask=isTaskPath(location.pathname)&&location.pathname.toLowerCase().endsWith('/'+task.public_id.toLowerCase());if(location.pathname+location.search!==url)history[replace||sameTask?'replaceState':'pushState'](null,'',url);currentRoute=url}
 async function copyTaskLink(id){
   let task=data.tasks.find(t=>t.id===id);if(!task?.public_id)return toast('El enlace no está disponible');let url=taskLink(task);
   try{if(!navigator.clipboard?.writeText)throw Error('Portapapeles no disponible');await navigator.clipboard.writeText(url)}
@@ -80,13 +96,29 @@ async function copyTaskLink(id){
   toast('Enlace copiado');
 }
 async function openDeepLink(){
-  let match=location.pathname.match(/^\/t\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);if(!match)return;
-  let task=data.tasks.find(t=>t.public_id?.toLowerCase()===match[1].toLowerCase());
-  if(!task){toast('Tarea no encontrada o sin acceso');return}
-  let projects=taskContextProjects(task),raw=new URLSearchParams(location.search).get('project'),requested=raw&&/^\d+$/.test(raw)?Number(raw):null;
-  active=requested&&projects.includes(requested)?requested:(projects[0]??0);boardView='board';filter='';render();await openTask(task.id);
-  if(requested&&!projects.includes(requested))toast('El tablero del enlace no está disponible; se abrió la tarea en una vista accesible');
+  if(location.pathname==='/'){setBoardUrl(active,true);render();return}
+  let taskMatch=location.pathname.match(/^\/board\/([^/]+)\/task\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  let legacyMatch=location.pathname.match(/^\/t\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  if(taskMatch||legacyMatch){
+    let task=data.tasks.find(t=>t.public_id?.toLowerCase()===(taskMatch?taskMatch[2]:legacyMatch[1]).toLowerCase());
+    if(!task){setBoardUrl(active,true);toast('Tarea no encontrada o sin acceso');return}
+    let projects=taskContextProjects(task),raw=taskMatch?taskMatch[1]:new URLSearchParams(location.search).get('project');
+    let requested=raw==='no-project'?0:raw&&/^\d+$/.test(raw)?Number(raw):data.projects.find(p=>p.public_id?.toLowerCase()===raw?.toLowerCase())?.id;
+    let valid=requested===0?!task.has_projects:requested!=null&&projects.includes(requested);
+    active=valid?requested:(projects[0]??0);boardView='board';filter='';render();
+    openingDeepLink=true;try{await openTask(task.id)}finally{openingDeepLink=false}
+    if(raw&&!valid)toast('El tablero del enlace no está disponible; se abrió la tarea en una vista accesible');
+    currentRoute=location.pathname+location.search;return;
+  }
+  let boardMatch=location.pathname.match(/^\/board\/([^/]+)$/i);
+  if(boardMatch){
+    let value=boardMatch[1].toLowerCase(),project=data.projects.find(p=>p.public_id?.toLowerCase()===value);
+    if(value==='no-project'||project){active=project?.id??0;boardView='board';filter='';statsType='';render()}
+    else{setBoardUrl(active,true);toast('Tablero no encontrado o sin acceso')}
+    currentRoute=location.pathname+location.search;return;
+  }
 }
+window.addEventListener('popstate',async()=>{if(!data)return;if(!await closeModal(false,false,true)){history.pushState(null,'',currentRoute);return}taskId=null;await openDeepLink();if(location.pathname==='/'){setBoardUrl(active,true);render()}currentRoute=location.pathname+location.search});
 
 function statsDefaultMonth(){let parts=new Intl.DateTimeFormat('en-US',{timeZone:data.stats_timezone||'America/Santiago',year:'numeric',month:'2-digit'}).formatToParts(new Date());return parts.find(x=>x.type==='year').value+'-'+parts.find(x=>x.type==='month').value}
 function daysLabel(value){return value==null?'—':new Intl.NumberFormat('es-CL',{maximumFractionDigits:1}).format(value)+' días'}
@@ -105,7 +137,7 @@ async function renderStats(){
 function collapseKey(p){return `flujo:collapsed:${data.user.id}:${p}`}
 function collapsedColumns(p){try{return JSON.parse(localStorage.getItem(collapseKey(p))||'[]')}catch{return []}}
 function toggleColumn(id){let list=collapsedColumns(active),next=list.includes(id)?list.filter(x=>x!==id):[...list,id];try{localStorage.setItem(collapseKey(active),JSON.stringify(next))}catch(e){toast('No se pudo guardar la vista contraída')}renderBoard()}
-function renameColumn(id){let p=data.projects.find(x=>x.id===active),col=p.columns.find(x=>x.id===id);formModal('Renombrar columna',`<label>Nombre<input name="name" required maxlength="100" value="${esc(col.name)}"></label>`,b=>api('columns/rename',{column_id:id,...b}))}
+function editColumn(id){let p=data.projects.find(x=>x.id===active),col=p?.columns.find(x=>x.id===id);if(p?.role!=='admin'||!col)return;formModal('Editar columna',`<label>Nombre<input name="name" required maxlength="100" value="${esc(col.name)}"></label><label>Color del punto<input type="color" name="color" value="${esc(col.color||'#a5a3ab')}"></label>`,b=>api('columns/update',{column_id:id,...b}))}
 const boardScrollPositions=new Map();
 function saveBoardScroll(){
   let board=document.querySelector('.board[data-project]');if(!board)return;
@@ -117,19 +149,107 @@ function restoreBoardScroll(board){
   let state=boardScrollPositions.get(board.dataset.project);if(!state)return;board.scrollLeft=state.left;
   board.querySelectorAll('.column[data-column] .cards').forEach(cards=>{cards.scrollTop=state.columns.get(cards.closest('.column').dataset.column)||0});
 }
+const listCollapsedState=new Map();
+function listCollapsedColumns(project){
+  let key=`flujo:list-collapsed:${data.user.id}:${project}`;
+  if(!listCollapsedState.has(key)){let ids=[];try{let saved=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(saved))ids=saved}catch{}listCollapsedState.set(key,ids)}
+  return listCollapsedState.get(key);
+}
+function toggleListColumn(button,id){
+  let key=`flujo:list-collapsed:${data.user.id}:${active}`,ids=listCollapsedColumns(active),collapsed=!ids.includes(id),next=collapsed?[...ids,id]:ids.filter(x=>x!==id);
+  listCollapsedState.set(key,next);try{localStorage.setItem(key,JSON.stringify(next))}catch{}
+  button.setAttribute('aria-expanded',String(!collapsed));button.setAttribute('aria-label',`${collapsed?'Expandir':'Contraer'} ${button.dataset.name}`);
+  let rows=[...button.closest('tbody').querySelectorAll('.task-list-row,.task-list-empty-row')],reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  clearTimeout(button.foldTimer);
+  for(let row of rows){
+    row.inert=collapsed;
+    if(reduced){row.hidden=collapsed;row.classList.remove('list-folding','list-folded');continue}
+    row.classList.add('list-folding');
+    if(!collapsed&&row.hidden){row.classList.add('list-folded');row.hidden=false;void row.offsetHeight}
+    row.classList.toggle('list-folded',collapsed);
+  }
+  if(!reduced)button.foldTimer=setTimeout(()=>{for(let row of rows){row.hidden=collapsed;row.classList.remove('list-folding','list-folded')}},240);
+}
+function listColumnTasks(project,column){return data.tasks.filter(t=>t.placements.some(x=>x.project_id===project&&x.column_id===column)).sort((a,b)=>a.placements.find(x=>x.project_id===project).position-b.placements.find(x=>x.project_id===project).position)}
+function renderTaskList(){
+  let p=data.projects.find(x=>x.id===active),board=$('#board');if(!p||!board)return;
+  let writable=p.role!=='viewer',query=normalizeSearch(filter),subtasks=new Map(),collapsed=listCollapsedColumns(p.id);
+  for(let task of data.tasks)if(task.parent_id)subtasks.set(task.parent_id,(subtasks.get(task.parent_id)||0)+1);
+  board.innerHTML=`<div class="task-list-wrap"><table class="task-list"><thead><tr><th scope="col">Tarea</th><th scope="col">Estado</th><th scope="col">Responsable</th><th scope="col">Fecha límite</th><th scope="col">Prioridad</th>${writable?'<th scope="col">Orden y columna</th>':''}</tr></thead>${p.columns.map(column=>{
+    let all=listColumnTasks(p.id,column.id),tasks=all.filter(t=>matchesSearch(t,query));
+    let hidden=collapsed.includes(column.id);
+    return `<tbody data-column="${column.id}" ondragover="listDragOver(event)" ondrop="dropListTask(event)"><tr class="task-list-group"><th colspan="${writable?6:5}" scope="colgroup"><button type="button" class="task-list-toggle" data-name="${esc(column.name)}" aria-label="${hidden?'Expandir':'Contraer'} ${esc(column.name)}" aria-expanded="${!hidden}" onclick="toggleListColumn(this,${column.id})">▾</button><span class="status-dot" style="background:${esc(column.color||'#a5a3ab')}"></span> ${esc(column.name)} <span class="count">${tasks.length}</span>${writable?` <button type="button" class="text-button" onclick="newTask(${column.id})" aria-label="Agregar tarea a ${esc(column.name)}">＋ Agregar tarea</button>`:''}</th></tr>${tasks.map(t=>{
+      let editable=writable&&t.can_edit,controls=taskQuickControls(t,editable),index=all.findIndex(x=>x.id===t.id),subtaskCount=subtasks.get(t.id)||0;
+      return `<tr class="task-list-row" data-id="${t.id}" ${hidden?'hidden':''}><td>${editable?`<span class="task-list-handle" draggable="true" ondragstart="startListDrag(event,${t.id})" ondragend="endListDrag()" title="Arrastrar tarea" aria-label="Arrastrar ${esc(t.title)}">⠿</span>`:''}<button type="button" class="task-list-title" onclick="openTask(${t.id})">${esc(t.title)}</button>${t.task_type?`<small>${esc(t.task_type.name)}</small>`:''}${subtaskCount?`<button type="button" class="task-list-count" onclick="openTask(${t.id},'subtareas')" aria-label="Abrir subtareas de ${esc(t.title)}">☷ ${subtaskCount}</button>`:''}${t.comment_count?`<button type="button" class="task-list-count" onclick="openTask(${t.id},'comentarios')" aria-label="Abrir comentarios de ${esc(t.title)}">◌ ${t.comment_count}</button>`:''}</td><td>${controls.statusControl}</td><td>${controls.personControl}</td><td>${controls.dateControl}</td><td>${controls.priorityControl}</td>${writable?`<td>${editable?`<div class="task-list-move"><button type="button" onclick="moveListTask(${t.id},${column.id},-1,this)" aria-label="Subir ${esc(t.title)}" ${index===0?'disabled':''}>↑</button><button type="button" onclick="moveListTask(${t.id},${column.id},1,this)" aria-label="Bajar ${esc(t.title)}" ${index===all.length-1?'disabled':''}>↓</button><select aria-label="Mover ${esc(t.title)} a columna" onchange="moveListTask(${t.id},Number(this.value),0,this)">${p.columns.map(c=>`<option value="${c.id}" ${c.id===column.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>`:''}</td>`:''}</tr>`;
+    }).join('')||`<tr class="task-list-empty-row" ${hidden?'hidden':''}><td colspan="${writable?6:5}" class="task-list-empty">${query?'Sin resultados en esta columna.':'Sin tareas en esta columna.'}</td></tr>`}</tbody>`;
+  }).join('')}</table></div>`;
+  for(let cell of board.querySelectorAll('.task-list-row > td, .task-list-empty-row > td')){
+    let fold=document.createElement('div'),content=document.createElement('div');fold.className='task-list-cell-fold';
+    while(cell.firstChild)content.appendChild(cell.firstChild);fold.appendChild(content);cell.appendChild(fold);
+  }
+}
+let listDrag=null,listScrollTimer=null,listScrollX=0,listScrollY=0;
+function stopListScroll(){clearInterval(listScrollTimer);listScrollTimer=null}
+document.addEventListener('dragover',e=>{if(listDrag&&!$('#board')?.contains(e.target))stopListScroll()});
+document.addEventListener('dragleave',e=>{if(listDrag&&!e.relatedTarget)stopListScroll()});
+function startListDrag(e,id){
+  if(dragSaving||columnSaving||dragged||listDrag){e.preventDefault();return}
+  let source=e.currentTarget.closest('.task-list-row'),placeholder=document.createElement('tr'),cell=document.createElement('td');
+  cell.colSpan=source.children.length;placeholder.className='task-list-placeholder';placeholder.setAttribute('aria-hidden','true');placeholder.appendChild(cell);source.after(placeholder);
+  listDrag={id,project:active,source,placeholder};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(id));
+  let rect=source.getBoundingClientRect();e.dataTransfer.setDragImage(source,Math.max(0,e.clientX-rect.left),Math.max(0,e.clientY-rect.top));
+  requestAnimationFrame(()=>{if(listDrag?.source===source)source.hidden=true});
+}
+function positionListPlaceholder(section,y){
+  let rows=[...section.querySelectorAll('.task-list-row')].filter(row=>row!==listDrag.source&&!row.hidden);
+  let next=rows.find(row=>{let rect=row.getBoundingClientRect();return y<rect.top+rect.height/2});
+  if(listDrag.placeholder.parentElement!==section||listDrag.placeholder.nextElementSibling!==(next||null))section.insertBefore(listDrag.placeholder,next||null);
+}
+function listDragOver(e){
+  if(!listDrag||listDrag.project!==active)return;
+  e.preventDefault();e.dataTransfer.dropEffect='move';positionListPlaceholder(e.currentTarget,e.clientY);
+  let board=$('#board'),rect=board.getBoundingClientRect();listScrollX=e.clientX;listScrollY=e.clientY;
+  if(e.clientY>=rect.top&&e.clientY<=rect.bottom&&(e.clientY<rect.top+50||e.clientY>rect.bottom-50)){
+    if(!listScrollTimer)listScrollTimer=setInterval(()=>{
+      let bounds=board.getBoundingClientRect(),direction=listScrollY<bounds.top+50?-1:listScrollY>bounds.bottom-50?1:0,previous=board.scrollTop;
+      board.scrollTop+=direction*8;
+      if(board.scrollTop!==previous){let section=document.elementFromPoint(listScrollX,listScrollY)?.closest('tbody[data-column]');if(section&&board.contains(section))positionListPlaceholder(section,listScrollY)}
+    },30);
+  }else stopListScroll();
+}
+function endListDrag(){stopListScroll();if(!listDrag)return;listDrag.source.hidden=false;listDrag.placeholder.remove();listDrag=null}
+async function dropListTask(e){
+  if(!listDrag||listDrag.project!==active)return;
+  listDragOver(e);let {id,project,source,placeholder}=listDrag,column=Number(e.currentTarget.dataset.column),next=placeholder.nextElementSibling;
+  while(next&&(!next.matches('.task-list-row[data-id]')||next===source))next=next.nextElementSibling;
+  let ids=listColumnTasks(project,column).map(t=>t.id),order=moveOrder(ids,id,next?Number(next.dataset.id):null);
+  stopListScroll();source.hidden=e.currentTarget.querySelector('.task-list-toggle')?.getAttribute('aria-expanded')==='false';placeholder.replaceWith(source);listDrag=null;dragSaving=true;
+  try{await api('task/move',{id,project_id:project,column_id:column,order});await refresh()}
+  catch(err){toast(err.message);try{await refresh()}catch(refreshError){toast(refreshError.message)}}finally{dragSaving=false}
+}
+async function moveListTask(id,column,shift,control){
+  if(dragSaving)return;let project=active,task=data.tasks.find(t=>t.id===id),placement=task?.placements.find(x=>x.project_id===project);if(!placement)return;
+  let ids=listColumnTasks(project,column).map(t=>t.id),index=ids.indexOf(id);
+  if(shift){let target=index+shift;if(index<0||target<0||target>=ids.length)return;[ids[index],ids[target]]=[ids[target],ids[index]]}
+  else{if(placement.column_id===column)return;ids.push(id)}
+  dragSaving=true;control.disabled=true;
+  try{await api('task/move',{id,project_id:project,column_id:column,order:ids});await refresh()}
+  catch(err){toast(err.message);try{await refresh()}catch(refreshError){toast(refreshError.message)}}finally{dragSaving=false}
+}
 function renderBoard(){
+  if(boardView==='list')return renderTaskList();
   saveBoardScroll();
   let p=data.projects.find(x=>x.id===active),orphan=active===0,board=$('#board');if(!board)return;let subtaskCounts=new Map();for(let task of data.tasks)if(task.parent_id)subtaskCounts.set(task.parent_id,(subtaskCounts.get(task.parent_id)||0)+1);
   let query=normalizeSearch(filter),matched=new Map(),match=t=>{if(!matched.has(t.id))matched.set(t.id,matchesSearch(t,query));return matched.get(t.id)};
   let scoped=orphan?data.tasks.filter(t=>!t.has_projects&&!t.parent_id):data.tasks.filter(t=>t.placements.some(x=>x.project_id===active));let found=scoped.filter(match).length,count=$('#boardCount');if(count)count.textContent=filter.trim()?`${found} de ${scoped.length} ${scoped.length===1?'tarea':'tareas'}`:`${scoped.length} ${scoped.length===1?'tarea':'tareas'}`;
   if(orphan){let ts=data.tasks.filter(t=>!t.has_projects&&!t.parent_id&&match(t));board.innerHTML=`<div class="orphan-list">${ts.map(t=>card(t,subtaskCounts.get(t.id)||0)).join('')||`<div class="empty-state">${filter.trim()?'No se encontraron tareas.':'No hay tareas sin proyecto.'}</div>`}</div>`;return}
   if(!p)return;let writable=p.role!=='viewer',collapsed=collapsedColumns(p.id);
-  board.innerHTML=`<div class="board" data-project="${p.id}" ondragover="columnDragOver(event)" ondrop="dropColumn(event)">${p.columns.map((c,i)=>{
+  board.innerHTML=`<div class="board" data-project="${p.id}" ondragover="columnDragOver(event)" ondrop="dropColumn(event)">${p.columns.map(c=>{
     let all=data.tasks.filter(t=>t.placements.some(x=>x.project_id===p.id&&x.column_id===c.id));
     let ts=all.filter(match).sort((a,b)=>a.placements.find(x=>x.project_id===p.id).position-b.placements.find(x=>x.project_id===p.id).position),isCollapsed=collapsed.includes(c.id);
     let handle=writable?`<span class="column-handle" draggable="true" ondragstart="startColumnDrag(event,${c.id})" ondragend="endColumnDrag()" data-tooltip="Arrastrar columna" aria-label="Arrastrar columna ${esc(c.name)}">⠿</span>`:'';
     if(isCollapsed)return `<div class="column column-collapsed" data-column="${c.id}"><div class="collapsed-controls">${handle}<button class="column-action" onclick="toggleColumn(${c.id})" data-tooltip="Expandir columna" aria-label="Expandir columna ${esc(c.name)}">›</button></div><div class="collapsed-label"><strong>${esc(c.name)}</strong><span class="count">${all.length}</span></div></div>`;
-    return `<div class="column" data-column="${c.id}" ondragover="dragOver(event)" ondrop="dropTask(event,${c.id})"><div class="column-header"><div>${handle}<span class="status-dot status-${i%4}"></span><strong title="${esc(c.name)}">${esc(c.name)}</strong><span class="count">${ts.length}</span></div><div class="column-actions">${writable?`<button class="column-action" onclick="renameColumn(${c.id})" data-tooltip="Renombrar columna" aria-label="Renombrar columna ${esc(c.name)}">✎</button><button class="column-action" onclick="newTask(${c.id})" data-tooltip="Agregar tarea" aria-label="Agregar tarea a ${esc(c.name)}">＋</button>`:''}<button class="column-action" onclick="toggleColumn(${c.id})" data-tooltip="Contraer columna" aria-label="Contraer columna ${esc(c.name)}">‹</button></div></div><div class="cards" tabindex="0" aria-label="Tareas de ${esc(c.name)}">${ts.map(t=>card(t,subtaskCounts.get(t.id)||0)).join('')}</div>${writable?`<button class="add-card" onclick="newTask(${c.id})">＋ &nbsp; Agregar tarea</button>`:''}</div>`
+    return `<div class="column" data-column="${c.id}" ondragover="dragOver(event)" ondrop="dropTask(event,${c.id})"><div class="column-header"><div>${handle}<span class="status-dot" style="background:${esc(c.color||'#a5a3ab')}"></span><strong title="${esc(c.name)}">${esc(c.name)}</strong><span class="count">${ts.length}</span></div><div class="column-actions">${p.role==='admin'?`<button class="column-action" onclick="editColumn(${c.id})" data-tooltip="Editar columna" aria-label="Editar columna ${esc(c.name)}">✎</button>`:''}${writable?`<button class="column-action" onclick="newTask(${c.id})" data-tooltip="Agregar tarea" aria-label="Agregar tarea a ${esc(c.name)}">＋</button>`:''}<button class="column-action" onclick="toggleColumn(${c.id})" data-tooltip="Contraer columna" aria-label="Contraer columna ${esc(c.name)}">‹</button></div></div><div class="cards" tabindex="0" aria-label="Tareas de ${esc(c.name)}">${ts.map(t=>card(t,subtaskCounts.get(t.id)||0)).join('')}</div>${writable?`<button class="add-card" onclick="newTask(${c.id})">＋ &nbsp; Agregar tarea</button>`:''}</div>`
   }).join('')}${writable?'<button class="add-column" onclick="newColumn()">＋ &nbsp; Agregar columna</button>':''}</div>`;
   restoreBoardScroll(board.querySelector('.board'));
 }
@@ -210,14 +330,18 @@ function openStatusMenu(e,id,detail,field='status'){
   (menu.querySelector('[aria-checked="true"]')||menu.querySelector('.status-option')).focus();
 }
 function quickSelect(label,content,options,onchange){return `<span class="quick-control" title="${esc(label)}" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation()"><span aria-hidden="true">${content}</span><select aria-label="${esc(label)}" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" onchange="${onchange}">${options}</select></span>`}
-function card(t,subtaskCount=0){
-  let p=data.projects.find(x=>x.id===active), editable=t.can_edit&&(!p||p.role!=='viewer'), draggable=editable&&!!p;
+function taskQuickControls(t,editable){
   let priority=`<span class="priority ${t.priority==='Alta'?'high':t.priority==='Baja'?'low':''}">${esc(t.priority)}${editable?' <span class="quick-chevron">⌄</span>':''}</span>`;
   let priorityControl=editable?quickSelect('Cambiar prioridad de '+t.title,priority,['Baja','Normal','Alta'].map(v=>`<option value="${v}" ${t.priority===v?'selected':''}>${v}</option>`).join(''),`quickUpdate(event,${t.id},'priority')`):priority;
   let st=taskStatus(t), statusControl=st?statusButton(t,editable):'';
   let dateLabel=t.due_date?'◷ &nbsp;'+esc(t.due_date):'◷ &nbsp; Sin fecha';
   let dateControl=editable?`<span class="quick-control date-control" title="Cambiar fecha límite" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation()"><span class="date-value" aria-hidden="true">${dateLabel}</span><input type="date" aria-label="Cambiar fecha límite de ${esc(t.title)}" value="${esc(t.due_date||'')}" onpointerdown="event.stopPropagation()" onclick="event.stopPropagation();if(typeof this.showPicker==='function'){try{this.showPicker();event.preventDefault()}catch(e){}}" onchange="quickUpdate(event,${t.id},'due_date')"></span>`:`<span class="date-value">${dateLabel}</span>`;
   let personControl=assigneeButton(t,editable);
+  return {priorityControl,statusControl,dateControl,personControl};
+}
+function card(t,subtaskCount=0){
+  let p=data.projects.find(x=>x.id===active), editable=t.can_edit&&(!p||p.role!=='viewer'), draggable=editable&&!!p,st=taskStatus(t);
+  let {priorityControl,statusControl,dateControl,personControl}=taskQuickControls(t,editable);
   return `<article class="card" ${draggable?'draggable="true"':''} data-id="${t.id}" ondragstart="dragStart(event,${t.id})" ondragend="endTaskDrag()" onclick="openTask(${t.id})"><div class="card-top">${statusControl}</div><div class="card-title-row"><h3>${esc(t.title)}</h3>${subtaskCount?`<button type="button" class="card-comments" draggable="false" aria-label="Abrir ${subtaskCount} ${subtaskCount===1?'subtarea':'subtareas'} de ${esc(t.title)}" onclick="event.stopPropagation();openTask(${t.id},'subtareas')" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation();event.preventDefault()"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M3 6l1 1 2-2M3 12l1 1 2-2M3 18l1 1 2-2"/></svg>${subtaskCount}</button>`:''}${t.comment_count?`<button type="button" class="card-comments" draggable="false" aria-label="Abrir ${t.comment_count} ${t.comment_count===1?'comentario':'comentarios'} de ${esc(t.title)}" onclick="event.stopPropagation();openTask(${t.id},'comentarios')" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation();event.preventDefault()"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H5l1.5-3A8.5 8.5 0 1 1 21 11.5Z"/></svg>${t.comment_count}</button>`:''}</div>${st?`<div class="task-type-line">${esc(t.task_type.name)}</div>`:''}${t.description?`<p>${esc(descriptionText(t))}</p>`:''}<div class="card-bottom"><div class="card-meta">${dateControl}${priorityControl}</div>${personControl}</div></article>`
 }
 async function quickUpdate(e,id,field){
@@ -311,8 +435,20 @@ async function dropTask(e,col){
 }
 
 async function logout(){await api('logout',{});location.reload()}
-function formModal(title,body,submit,footer=''){modal(`<div class="dialog-head"><h2>${title}</h2><button onclick="closeModal()">×</button></div><form id="modalForm">${body}<div class="dialog-actions">${footer?`<span class="profile-version">${esc(footer)}</span>`:''}<button type="button" class="outline" onclick="closeModal()">Cancelar</button><button class="primary">Guardar</button></div></form>`);$('#modalForm').querySelector('input:not([type=hidden]), textarea, select')?.focus();$('#modalForm').onsubmit=async e=>{e.preventDefault();try{await submit(Object.fromEntries(new FormData(e.target)));closeModal();await refresh()}catch(err){toast(err.message)}}}
-function newProject(){formModal('Nuevo proyecto','<label>Nombre del proyecto<input name="name" required placeholder="Ej. Lanzamiento de producto"></label><label>Descripción<textarea name="description" placeholder="¿De qué trata este proyecto?"></textarea></label><label>Color<input type="color" name="color" value="#7765d7"></label>',async b=>{let r=await api('projects',b);active=r.id})}
+function formModal(title,body,submit,footer='',taskCreation=false){
+  modal(`<div class="dialog-head"><h2>${title}</h2><button onclick="closeModal()">×</button></div><form id="modalForm">${body}<div class="dialog-actions">${footer?`<span class="profile-version">${esc(footer)}</span>`:''}<button type="button" class="outline" onclick="closeModal()">Cancelar</button>${taskCreation?'<button type="submit" value="create" class="outline">Crear</button><button type="submit" value="edit" class="primary">Crear y editar</button>':'<button type="submit" class="primary">Guardar</button>'}</div></form>`);
+  let form=$('#modalForm');form.querySelector('input:not([type=hidden]), textarea, select')?.focus();
+  form.onsubmit=async e=>{
+    e.preventDefault();let values=Object.fromEntries(new FormData(form));
+    if(!taskCreation){try{await submit(values);closeModal();await refresh()}catch(err){toast(err.message)}return}
+    let edit=e.submitter?.value==='edit',buttons=[...form.querySelectorAll('button[type="submit"]')];buttons.forEach(button=>button.disabled=true);
+    let result;try{result=await submit(values)}catch(err){buttons.forEach(button=>button.disabled=false);toast(err.message);return}
+    let open=edit&&form.isConnected;if(form.isConnected)await closeModal(false,false);
+    try{await refresh()}catch(err){toast('Tarea creada, pero no se pudo actualizar el tablero');return}
+    if(open&&!$('#modal .overlay')){if(data.tasks.some(t=>t.id===result.id))await openTask(result.id);else toast('Tarea creada, pero no está disponible para editar')}
+  };
+}
+function newProject(){formModal('Nuevo proyecto','<label>Nombre del proyecto<input name="name" required placeholder="Ej. Lanzamiento de producto"></label><label>Descripción<textarea name="description" placeholder="¿De qué trata este proyecto?"></textarea></label><label>Color<input type="color" name="color" value="#7765d7"></label>',async b=>{let r=await api('projects',b);active=r.id;currentRoute='/board/'+r.public_id;history.pushState(null,'',currentRoute)})}
 function editProject(){
   let project=data.projects.find(p=>p.id===active);if(!project||project.role!=='admin')return;
   modal(`<div class="dialog-head"><div><div class="eyebrow">CONFIGURACIÓN DEL PROYECTO</div><h2>Editar tablero</h2></div><button type="button" onclick="closeModal()" aria-label="Cerrar">×</button></div><div class="task-tabs project-settings-tabs" role="tablist" aria-label="Configuración del tablero" onkeydown="projectSettingsKeydown(event)"><button type="button" role="tab" id="project-tab-tablero" aria-controls="project-panel-tablero" onclick="setProjectSettingsTab('tablero')">Tablero</button><button type="button" role="tab" id="project-tab-usuarios" aria-controls="project-panel-usuarios" onclick="setProjectSettingsTab('usuarios')">Usuarios</button><button type="button" role="tab" id="project-tab-tipos" aria-controls="project-panel-tipos" onclick="setProjectSettingsTab('tipos')">Tipos de tarea</button></div><section id="project-panel-tablero" role="tabpanel" aria-labelledby="project-tab-tablero"><form id="projectSettingsForm"><label for="projectName">Nombre del tablero</label><div class="project-name-field"><input type="color" name="color" value="${esc(project.color)}" aria-label="Color del tablero" title="Color del tablero"><input id="projectName" name="name" required maxlength="120" value="${esc(project.name)}"></div><label>Descripción<textarea name="description" maxlength="5000" rows="4" placeholder="¿De qué trata este tablero?">${esc(project.description)}</textarea></label><div class="dialog-actions"><button type="button" class="outline" onclick="closeModal()">Cancelar</button><button class="primary">Guardar</button></div></form></section><section id="project-panel-usuarios" role="tabpanel" aria-labelledby="project-tab-usuarios"><p class="muted project-settings-note">Elige quién puede acceder a este tablero y qué puede hacer. Los cambios de acceso se guardan de inmediato.</p><div class="people-list">${data.users.map(u=>{let m=project.members.find(m=>m.id===u.id);return `<div class="person">${avatar(u.name)}<div><strong>${esc(u.name)}</strong><small>${u.admin?'Admin del workspace · acceso total':'@'+esc(u.username)}</small></div>${u.admin?'<span class="role-label">Admin</span>':`<select aria-label="Acceso de ${esc(u.name)}" onchange="setMember(${u.id},this.value,this)"><option value="remove" ${!m?'selected':''}>Sin acceso</option><option value="viewer" ${m?.role==='viewer'?'selected':''}>Solo lectura</option><option value="editor" ${m?.role==='editor'?'selected':''}>Editor</option><option value="admin" ${m?.role==='admin'?'selected':''}>Admin</option></select>`}</div>`}).join('')}</div></section><section id="project-panel-tipos" role="tabpanel" aria-labelledby="project-tab-tipos"></section>`);
@@ -322,9 +458,9 @@ function editProject(){
 function setProjectSettingsTab(name){for(let tab of ['tablero','usuarios','tipos']){let selected=tab===name,button=$('#project-tab-'+tab),panel=$('#project-panel-'+tab);if(!button||!panel)return;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;panel.hidden=!selected}}
 function projectSettingsKeydown(e){let names=['tablero','usuarios','tipos'],i=names.findIndex(name=>$('#project-tab-'+name).getAttribute('aria-selected')==='true');if(e.key==='ArrowRight')i=(i+1)%names.length;else if(e.key==='ArrowLeft')i=(i+names.length-1)%names.length;else if(e.key==='Home')i=0;else if(e.key==='End')i=names.length-1;else return;e.preventDefault();setProjectSettingsTab(names[i]);$('#project-tab-'+names[i]).focus()}
 
-function newOrphan(){formModal('Nueva tarea sin proyecto','<label>Nombre de la tarea<input name="title" required></label>',b=>api('tasks',b))}
+function newOrphan(){formModal('Nueva tarea sin proyecto','<label>Nombre de la tarea<input name="title" required></label>',b=>api('tasks',b),'',true)}
 function newColumn(){formModal('Nueva columna','<label>Nombre<input name="name" required placeholder="Nombre de la columna"></label>',b=>api('columns',{...b,project_id:active}))}
-function newTask(col){let p=data.projects.find(x=>x.id===active);formModal('Nueva tarea',`<label>Nombre de la tarea<input name="title" required placeholder="¿Qué hay que hacer?"></label><label>Columna<select name="column_id">${p.columns.map(c=>`<option value="${c.id}" ${c.id===col?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label><label>Tipo de tarea<select name="type_id">${p.types.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label>`,b=>api('tasks',{...b,project_id:active}))}
+function newTask(col){let p=data.projects.find(x=>x.id===active);formModal('Nueva tarea',`<label>Nombre de la tarea<input name="title" required placeholder="¿Qué hay que hacer?"></label><label>Columna<select name="column_id">${p.columns.map(c=>`<option value="${c.id}" ${c.id===col?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label><label>Tipo de tarea<select name="type_id">${p.types.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label>`,b=>api('tasks',{...b,project_id:p.id}),'',true)}
 function editProfile(){
   formModal('Mi perfil',`<label>Nombre<input name="name" value="${esc(data.user.name)}" autocomplete="name" maxlength="120" required></label><p class="muted profile-password-note">Para cambiar tu contraseña, completa los siguientes campos.</p><label>Contraseña actual<input name="current_password" type="password" autocomplete="current-password"></label><label>Nueva contraseña<input name="new_password" type="password" minlength="8" autocomplete="new-password" placeholder="Mínimo 8 caracteres"></label><label>Confirmar nueva contraseña<input name="confirm_password" type="password" autocomplete="new-password"></label>`,async b=>{await api('profile',b);toast('Perfil actualizado')},'Versión: '+(data.version||'No disponible'))
 }
@@ -408,7 +544,7 @@ function confirmDeleteTask(id){
   $('#modal').appendChild(dialog);let cancel=dialog.querySelector('[data-cancel]'),button=dialog.querySelector('[data-delete]');
   async function cancelDialog(){if(dialog.dataset.closing)return;dialog.dataset.closing='true';dialog.inert=true;if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches){dialog.classList.add('is-closing');await waitForModalAnimation(dialog)}if(dialog.open)dialog.close()}
   cancel.onclick=cancelDialog;dialog.addEventListener('close',()=>dialog.remove());dialog.addEventListener('cancel',e=>{e.preventDefault();if(!button.disabled)cancelDialog()});
-  button.onclick=async()=>{button.disabled=true;cancel.disabled=true;try{await api('task/delete',{id})}catch(err){button.disabled=false;cancel.disabled=false;toast(err.message);return}dialog.close();closeModal(true,true);taskId=null;if(/^\/t\//.test(location.pathname))history.replaceState(null,'','/');try{await refresh();toast('Tarea eliminada')}catch(err){toast('Tarea eliminada, pero no se pudo actualizar el tablero')}};
+  button.onclick=async()=>{button.disabled=true;cancel.disabled=true;try{await api('task/delete',{id})}catch(err){button.disabled=false;cancel.disabled=false;toast(err.message);return}dialog.close();closeModal(true,true);taskId=null;if(/^\/t\//.test(location.pathname))setBoardUrl(active,true);try{await refresh();toast('Tarea eliminada')}catch(err){toast('Tarea eliminada, pero no se pudo actualizar el tablero')}};
   dialog.showModal();cancel.focus();
 }
 function setTaskTab(name){taskTab=name;for(let tab of ['detalle','subtareas','comentarios','actividad']){let active=tab===name,button=$('#task-tab-'+tab),panel=$('#task-panel-'+tab);if(!button||!panel)return;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;panel.hidden=!active}}
@@ -479,7 +615,7 @@ function formatDescription(command,value=null){$('#descriptionEditor').focus();d
 function addDescriptionLink(){let url=prompt('Dirección del enlace (https://, http:// o mailto:)');if(!url)return;try{let parsed=new URL(url);if(!['https:','http:','mailto:'].includes(parsed.protocol))throw Error();formatDescription('createLink',url)}catch(e){toast('Ingresa una dirección válida que comience con https://, http:// o mailto:')}}
 function pasteDescription(e){e.preventDefault();document.execCommand('insertText',false,e.clipboardData.getData('text/plain'))}
 
-async function taskProject(id,p,remove){if(taskDraft&&!await flushTaskDraft())return;try{await api('task/project',{id,project_id:p,remove});await refresh();let task=data.tasks.find(t=>t.id===id);if(task){if(!task.has_projects){active=0;boardView='board';filter='';render()}await openTask(id)}else{closeModal();toast('La tarea ya no está disponible para tu usuario')}}catch(e){toast(e.message)}}
+async function taskProject(id,p,remove){if(taskDraft&&!await flushTaskDraft())return;try{await api('task/project',{id,project_id:p,remove});await refresh();let task=data.tasks.find(t=>t.id===id);if(task){if(!task.has_projects){active=0;boardView='board';filter='';if(!isTaskPath(location.pathname))setBoardUrl(0,true);render()}await openTask(id)}else{closeModal();toast('La tarea ya no está disponible para tu usuario')}}catch(e){toast(e.message)}}
 function renderSubtasks(subs){return subs.map(s=>`<button type="button" class="subtask" onclick="openTask(${s.id})">◯ &nbsp; ${esc(s.title)} <span>→</span></button>`).join('')||'<p class="muted">Aún no hay subtareas.</p>'}
 function newSubtask(){let form=$('#subtaskForm');if(!form)return;$('#addSubtask').hidden=true;form.hidden=false;form.elements.title.focus()}
 function setupSubtaskForm(id){
@@ -556,5 +692,15 @@ async function moveAutomation(i,delta){let order=automationRules.map(r=>r.id),j=
 async function toggleAutomation(i){let r=automationRules[i];try{await api('automations/save',{id:r.id,project_id:automationProject.id,name:r.name,enabled:!r.enabled,trigger:r.trigger,conditions:r.conditions,actions:r.actions,position:r.position??i});await reloadAutomations()}catch(e){toast(e.message)}}
 async function deleteAutomation(i){let r=automationRules[i];if(!confirm(`¿Eliminar la automatización «${r.name}»?`))return;try{await api('automations/delete',{project_id:automationProject.id,id:r.id});await reloadAutomations()}catch(e){toast(e.message)}}
 const renderBoardWithoutAutomations=render;
-render=function(){renderBoardWithoutAutomations();let p=data.projects.find(x=>x.id===active),heading=$('.project-title-row');if(p&&['admin','editor'].includes(p.role)&&heading){let button=document.createElement('button');button.type='button';button.className='automation-entry';button.textContent='⚡ Automatizaciones';button.onclick=openAutomations;heading.appendChild(button)}};
+render=function(){
+  renderBoardWithoutAutomations();let p=data.projects.find(x=>x.id===active),heading=$('.project-title-row');
+  if(p){
+    let first=$('.tabs > .tab');if(first){let tab=document.createElement('button');tab.type='button';tab.className='tab'+(boardView==='list'?' active':'');tab.textContent='☷  Lista';tab.onclick=()=>setBoardView('list');first.after(tab)}
+    if(boardView==='list'){
+      let label=document.createElement('label');label.className='search top-search';label.innerHTML='<span aria-hidden="true">⌕</span><input type="search" aria-label="Buscar tareas del tablero por nombre o descripción" placeholder="Buscar en este tablero">';
+      let input=label.querySelector('input');input.value=filter;input.oninput=()=>{filter=input.value;renderTaskList()};$('.topbar .today')?.before(label);
+    }
+  }
+  if(p&&['admin','editor'].includes(p.role)&&heading){let button=document.createElement('button');button.type='button';button.className='automation-entry';button.textContent='⚡ Automatizaciones';button.onclick=openAutomations;heading.appendChild(button)}
+};
 start();
