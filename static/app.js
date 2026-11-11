@@ -575,7 +575,16 @@ function confirmDeleteTask(id){
   button.onclick=async()=>{button.disabled=true;cancel.disabled=true;try{await api('task/delete',{id})}catch(err){button.disabled=false;cancel.disabled=false;toast(err.message);return}dialog.close();closeModal(true,true);taskId=null;if(/^\/t\//.test(location.pathname))setBoardUrl(active,true);try{await refresh();toast('Tarea eliminada')}catch(err){toast('Tarea eliminada, pero no se pudo actualizar el tablero')}};
   dialog.showModal();cancel.focus();
 }
-function setTaskTab(name){taskTab=name;for(let tab of ['detalle','subtareas','comentarios','actividad']){let active=tab===name,button=$('#task-tab-'+tab),panel=$('#task-panel-'+tab);if(!button||!panel)return;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;panel.hidden=!active}}
+const taskTabAnimations=new WeakMap();
+function setTaskTab(name){
+  let previous=$('#modal .task-dialog [id^="task-tab-"][aria-selected="true"]'),dialog=previous?.closest('.task-dialog');
+  let start=dialog?.getBoundingClientRect().height;taskTabAnimations.get(dialog)?.cancel();
+  taskTab=name;
+  for(let tab of ['detalle','subtareas','comentarios','actividad']){let selected=tab===name,button=$('#task-tab-'+tab),panel=$('#task-panel-'+tab);if(!button||!panel)return;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;panel.hidden=!selected}
+  if(!dialog||previous.id==='task-tab-'+name||window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  let end=dialog.getBoundingClientRect().height;
+  if(Math.abs(start-end)>0.5){let animation=dialog.animate([{height:start+'px'},{height:end+'px'}],{duration:180,easing:'cubic-bezier(.2,.75,.3,1)'});taskTabAnimations.set(dialog,animation)}
+}
 function taskTabKeydown(e){let names=['detalle','subtareas','comentarios','actividad'],i=names.indexOf(taskTab);if(e.key==='ArrowRight')i=(i+1)%names.length;else if(e.key==='ArrowLeft')i=(i+names.length-1)%names.length;else if(e.key==='Home')i=0;else if(e.key==='End')i=names.length-1;else return;e.preventDefault();setTaskTab(names[i]);$('#task-tab-'+names[i]).focus()}
 
 function taskTypeOptions(t){let options=[t.task_type];if(!t.has_projects)options.push(data.base_type);for(let placement of t.placements){let p=data.projects.find(p=>p.id===placement.project_id);if(p&&p.role!=='viewer')options.push(...p.types)}return options.filter((x,i)=>x&&options.findIndex(y=>y?.id===x.id)===i)}
