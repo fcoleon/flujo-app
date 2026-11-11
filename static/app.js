@@ -1,5 +1,6 @@
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let data=null, active=null, taskId=null, dragged=null, filter='', typeDraft=null, statusDrag=null, dragPlaceholder=null, dragSource=null, dragOffsetY=0, dragSaving=false;
+let dragScrollTimer=null, dragScrollColumn=null, dragScrollY=0;
 let taskTab='detalle', boardView='board', statsMonth='', statsType='', statsRequest=0, taskDraft=null;
 const cardMotion=new WeakMap();
 let columnDrag=null, columnGhost=null, columnSource=null, columnSaving=false;
@@ -220,10 +221,27 @@ function dragStart(e,id){
   dragSource.after(dragPlaceholder);
   requestAnimationFrame(()=>{if(dragged===id&&dragSource)dragSource.classList.add('drag-source')});
 }
-function dragOver(e){
+function stopDragScroll(){clearInterval(dragScrollTimer);dragScrollTimer=null;dragScrollColumn=null}
+document.addEventListener('dragover',e=>{if(dragScrollColumn&&!dragScrollColumn.contains(e.target))stopDragScroll()});
+document.addEventListener('dragleave',e=>{if(!e.relatedTarget)stopDragScroll()});
+function dragOver(e,scroll=true){
   if(!dragged||!dragPlaceholder||e.currentTarget.classList.contains('column-collapsed'))return;
   e.preventDefault();e.dataTransfer.dropEffect='move';
   let column=e.currentTarget, cards=column.querySelector('.cards');
+  if(scroll){
+    let rect=cards.getBoundingClientRect();
+    dragScrollY=e.clientY;
+    if(e.clientY>=rect.top&&e.clientY<=rect.bottom&&(e.clientY<rect.top+50||e.clientY>rect.bottom-50)){
+      if(dragScrollColumn!==column){
+        stopDragScroll();dragScrollColumn=column;
+        dragScrollTimer=setInterval(()=>{
+          let rect=cards.getBoundingClientRect(), direction=dragScrollY<rect.top+50?-1:dragScrollY>rect.bottom-50?1:0, previous=cards.scrollTop;
+          cards.scrollTop+=direction*8;
+          if(cards.scrollTop!==previous)dragOver({currentTarget:column,clientY:dragScrollY,preventDefault(){},dataTransfer:{}},false);
+        },30);
+      }
+    }else stopDragScroll();
+  }
   // Use layout positions, not animated rectangles, to keep the insertion point stable.
   let top=cards.getBoundingClientRect().top-cards.scrollTop;
   let next=[...cards.querySelectorAll('.card:not(.card-placeholder):not(.drag-source)')].filter(card=>card!==dragSource).find(card=>{
@@ -248,6 +266,7 @@ function dragOver(e){
   column.classList.add('drag-target');
 }
 function endTaskDrag(){
+  stopDragScroll();
   dragSource?.classList.remove('drag-source');dragPlaceholder?.remove();
   document.querySelectorAll('.column.drag-target').forEach(el=>el.classList.remove('drag-target'));
   dragged=null;dragSource=null;dragPlaceholder=null;
