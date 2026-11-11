@@ -20,7 +20,12 @@ function setupTaskTitle(input,task){
   let title=document.createElement('textarea');title.className=input.className;title.name=input.name;title.rows=1;title.required=input.required;title.disabled=input.disabled;title.setAttribute('aria-label','Nombre de la tarea');title.value=task.title;
   input.replaceWith(title);
   function resize(){title.style.height='auto';title.style.height=title.scrollHeight+'px'}
-  title.addEventListener('input',resize);resize();
+  title.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing)e.preventDefault()});
+  title.addEventListener('input',()=>{
+    let original=title.value,lineBreaks=/\r\n|[\r\n\x0b\x0c\x1c-\x1e\u0085\u2028\u2029]/g,clean=original.replace(lineBreaks,' ');
+    if(clean!==original){let start=original.slice(0,title.selectionStart).replace(lineBreaks,' ').length,end=original.slice(0,title.selectionEnd).replace(lineBreaks,' ').length;title.value=clean;title.setSelectionRange(start,end)}
+    resize();
+  });resize();
 }
 function modal(html,wide=false){
   closeStatusMenu();
@@ -137,7 +142,30 @@ async function renderStats(){
 function collapseKey(p){return `flujo:collapsed:${data.user.id}:${p}`}
 function collapsedColumns(p){try{return JSON.parse(localStorage.getItem(collapseKey(p))||'[]')}catch{return []}}
 function toggleColumn(id){let list=collapsedColumns(active),next=list.includes(id)?list.filter(x=>x!==id):[...list,id];try{localStorage.setItem(collapseKey(active),JSON.stringify(next))}catch(e){toast('No se pudo guardar la vista contraída')}renderBoard()}
-function editColumn(id){let p=data.projects.find(x=>x.id===active),col=p?.columns.find(x=>x.id===id);if(p?.role!=='admin'||!col)return;formModal('Editar columna',`<label>Nombre<input name="name" required maxlength="100" value="${esc(col.name)}"></label><label>Color del punto<input type="color" name="color" value="${esc(col.color||'#a5a3ab')}"></label>`,b=>api('columns/update',{column_id:id,...b}))}
+function editColumn(id){
+  let p=data.projects.find(x=>x.id===active),col=p?.columns.find(x=>x.id===id);if(p?.role!=='admin'||!col)return;
+  formModal('Editar columna',`<label>Nombre<input name="name" required maxlength="100" value="${esc(col.name)}"></label><label>Color del punto<input type="color" name="color" value="${esc(col.color||'#a5a3ab')}"></label>`,b=>api('columns/update',{column_id:id,...b}));
+  let button=document.createElement('button');button.type='button';button.className='task-delete column-delete-button';button.textContent='Borrar columna';button.onclick=()=>confirmDeleteColumn(id);$('#modalForm .dialog-actions').prepend(button);
+}
+function confirmDeleteColumn(id){
+  let project=data.projects.find(p=>p.id===active),column=project?.columns.find(c=>c.id===id);if(project?.role!=='admin'||!column)return;
+  let tasks=listColumnTasks(project.id,id),others=project.columns.filter(c=>c.id!==id),dialog=document.createElement('dialog');
+  dialog.className='dialog confirm-column-delete';dialog.setAttribute('aria-labelledby','deleteColumnTitle');dialog.setAttribute('aria-describedby','deleteColumnDescription');
+  dialog.innerHTML=`<form><h2 id="deleteColumnTitle">¿Borrar columna?</h2><p id="deleteColumnDescription">Se eliminará la columna <strong>«${esc(column.name)}»</strong>${tasks.length?`, que contiene ${tasks.length} ${tasks.length===1?'tarea':'tareas'}`:''}.</p>${tasks.length?`<fieldset><legend>Elige qué hacer con sus tareas</legend><label class="column-delete-option"><input type="radio" name="action" value="move" required ${others.length?'':'disabled'}> Dejar las tareas en otra columna</label><label class="column-delete-destination" hidden>Columna de destino<select name="destination_id" disabled><option value="">Selecciona una columna</option>${others.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>${others.length?'':'<p class="muted">No hay otra columna disponible en este tablero.</p>'}<label class="column-delete-option"><input type="radio" name="action" value="remove" required> Sacar las tareas de este proyecto</label><p class="muted">Quedarán sin proyecto si no pertenecen a otro tablero ni heredan uno de una tarea principal.</p><label class="column-delete-option"><input type="radio" name="action" value="delete" required> Eliminar las tareas de esta columna</label><p class="column-delete-warning">Las tareas se eliminarán de todos sus tableros y no podrán recuperarse. Sus subtareas se conservarán como tareas independientes.</p></fieldset>`:''}<p class="column-delete-error" role="alert"></p><div class="dialog-actions"><button type="button" class="outline" data-cancel>Cancelar</button><button type="submit" class="task-delete" ${tasks.length?'disabled':''}>Borrar columna</button></div></form>`;
+  let warning=dialog.querySelector('.column-delete-warning');if(warning)warning.textContent='Las tareas se eliminarán de todos sus tableros y no podrán recuperarse. Las subtareas que no estén en esta columna se conservarán como tareas independientes.';
+  $('#modal').appendChild(dialog);let form=dialog.querySelector('form'),cancel=dialog.querySelector('[data-cancel]'),submit=dialog.querySelector('[type=submit]'),destination=form.querySelector('[name=destination_id]'),destinationLabel=form.querySelector('.column-delete-destination'),error=dialog.querySelector('.column-delete-error');
+  function update(){let action=form.querySelector('[name=action]:checked')?.value;if(destination){destination.disabled=action!=='move';destination.required=action==='move';destinationLabel.hidden=action!=='move'}submit.disabled=!!submit.dataset.stale||(!!tasks.length&&(!action||(action==='move'&&!destination.value)))}
+  form.addEventListener('change',update);cancel.onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove());dialog.addEventListener('cancel',e=>{if(submit.dataset.saving)e.preventDefault()});
+  form.onsubmit=async e=>{
+    e.preventDefault();let action=form.querySelector('[name=action]:checked')?.value;if(tasks.length&&(!action||(action==='move'&&!destination.value)))return;
+    submit.disabled=cancel.disabled=true;submit.dataset.saving='true';error.textContent='';
+    try{await api('columns/delete',{column_id:id,task_ids:tasks.map(t=>t.id),...(action?{action}:{}),...(action==='move'?{destination_id:Number(destination.value)}:{})})}
+    catch(err){delete submit.dataset.saving;cancel.disabled=false;if(err.message.includes('Las tareas de la columna cambiaron')){submit.dataset.stale='true';try{await refresh()}catch(refreshError){toast('No se pudo actualizar el tablero')}}update();error.textContent=err.message;return}
+    dialog.close();await closeModal(false,false);
+    try{await refresh();toast('Columna eliminada')}catch(err){toast('Columna eliminada, pero no se pudo actualizar el tablero')}
+  };
+  dialog.showModal();cancel.focus();
+}
 const boardScrollPositions=new Map();
 function saveBoardScroll(){
   let board=document.querySelector('.board[data-project]');if(!board)return;
@@ -436,7 +464,7 @@ async function dropTask(e,col){
 
 async function logout(){await api('logout',{});location.reload()}
 function formModal(title,body,submit,footer='',taskCreation=false){
-  modal(`<div class="dialog-head"><h2>${title}</h2><button onclick="closeModal()">×</button></div><form id="modalForm">${body}<div class="dialog-actions">${footer?`<span class="profile-version">${esc(footer)}</span>`:''}<button type="button" class="outline" onclick="closeModal()">Cancelar</button>${taskCreation?'<button type="submit" value="create" class="outline">Crear</button><button type="submit" value="edit" class="primary">Crear y editar</button>':'<button type="submit" class="primary">Guardar</button>'}</div></form>`);
+  modal(`<div class="dialog-head"><h2>${title}</h2><button onclick="closeModal()">×</button></div><form id="modalForm">${body}<div class="dialog-actions ${taskCreation?'task-create-actions':''}">${footer?`<span class="profile-version">${esc(footer)}</span>`:''}<button type="button" class="outline ${taskCreation?'task-create-cancel':''}" onclick="closeModal()">Cancelar</button>${taskCreation?'<button type="submit" value="create" class="outline task-create-button">Crear</button><button type="submit" value="edit" class="primary">Crear y editar</button>':'<button type="submit" class="primary">Guardar</button>'}</div></form>`);
   let form=$('#modalForm');form.querySelector('input:not([type=hidden]), textarea, select')?.focus();
   form.onsubmit=async e=>{
     e.preventDefault();let values=Object.fromEntries(new FormData(form));

@@ -540,6 +540,19 @@ class TaskTypesTest(unittest.TestCase):
             self.assertEqual(client.get(path).status_code,200)
         self.assertEqual(client.get('/t/no-es-uuid').status_code,404)
 
+    def test_task_titles_reject_line_breaks_on_create_and_update(self):
+        for title in ('Uno\nDos','Uno\rDos','Uno\vDos','Uno\fDos','Uno\u0085Dos','Uno\u2028Dos','Uno\u2029Dos'):
+            status,result=self.post('tasks',{'title':title,'project_id':1,'column_id':1},user=2)
+            self.assertEqual(status,400);self.assertIn('saltos de línea',result['error'])
+        tid=self.post('tasks',{'title':'Título válido','project_id':1,'column_id':1},user=2)[1]['id']
+        status,result=self.post('task/update',{'id':tid,'title':'Otro\nTítulo','priority':'Alta'},user=2)
+        self.assertEqual(status,400);self.assertIn('saltos de línea',result['error'])
+        with app.db() as c:
+            task=c.execute('SELECT title,priority FROM tasks WHERE id=?',(tid,)).fetchone()
+            self.assertEqual((task['title'],task['priority']),('Título válido','Normal'))
+            c.execute('UPDATE tasks SET title=? WHERE id=?',('Antiguo\ntítulo',tid))
+        self.assertEqual(self.post('task/update',{'id':tid,'priority':'Alta'},user=2)[0],200)
+
     def test_public_project_ids_are_stable_and_private(self):
         app.init();app.init()
         with app.db() as c:

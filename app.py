@@ -168,6 +168,11 @@ def text_field(body,key):
     if not isinstance(value,str): raise ValueError(f"El campo '{key}' debe ser texto")
     return value
 
+def task_title(value):
+    if not isinstance(value,str) or not value.strip(): raise ValueError('El nombre es obligatorio')
+    if re.search(r'[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]',value): raise ValueError('El nombre de la tarea no puede contener saltos de línea')
+    return value.strip()
+
 @app.errorhandler(413)
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
 
@@ -321,11 +326,11 @@ def api_post():
             if flags['must_change_password']:
                 return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
             g.disabled_automations=[]
-            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block'):
+            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete'):
                 c.execute('BEGIN IMMEDIATE')
             if path in ('/api/workspace/update','/api/workspace/block','/api/profile','/api/users'):
                 result=post_workspace(c,u,path,b)
-            elif path in ('/api/projects','/api/projects/update','/api/members','/api/columns','/api/columns/rename','/api/columns/update','/api/columns/reorder'):
+            elif path in ('/api/projects','/api/projects/update','/api/members','/api/columns','/api/columns/rename','/api/columns/update','/api/columns/reorder','/api/columns/delete'):
                 result=post_projects(c,u,path,b)
             elif path in ('/api/tasks','/api/task-types','/api/task-types/delete','/api/task-types/update','/api/task/type-status'):
                 result=post_task_types(c,u,path,b)
@@ -378,6 +383,11 @@ def automate(c,tid,events,uid,project=None):
         row=c.execute('SELECT ty.project_id FROM tasks t JOIN task_types ty ON ty.id=t.type_id WHERE t.id=?',(tid,)).fetchone()
         project=row['project_id'] if row else None
     g.disabled_automations.extend(automations.run(c,tid,project,events,uid,now,record,metric_event))
+
+def delete_task(c,tid,uid):
+    task=c.execute('SELECT title,parent_id FROM tasks WHERE id=?',(tid,)).fetchone()
+    if task['parent_id']: record(c,task['parent_id'],uid,'eliminó la subtarea '+task['title'])
+    c.execute('DELETE FROM tasks WHERE id=?',(tid,))
 
 def post_workspace(c,u,path,b):
             if path=='/api/workspace/update':
@@ -463,6 +473,36 @@ def post_projects(c,u,path,b):
                 if not name or len(name)>100: raise ValueError('El nombre debe tener entre 1 y 100 caracteres')
                 if not isinstance(color,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',color): raise ValueError('Color inválido')
                 c.execute('UPDATE columns SET name=?,color=? WHERE id=?',(name,color,col))
+            elif path=='/api/columns/delete':
+                col=int(b['column_id']);column=c.execute('SELECT * FROM columns WHERE id=?',(col,)).fetchone()
+                if not column: raise ValueError('Columna no encontrada')
+                project=column['project_id']
+                if role(c,u,project)!='admin': raise PermissionError('Solo un administrador del proyecto puede eliminar la columna')
+                expected=b.get('task_ids')
+                if not isinstance(expected,list) or any(type(x) is not int for x in expected) or len(expected)!=len(set(expected)): raise ValueError('Lista de tareas inválida')
+                tasks=[r['task_id'] for r in c.execute('SELECT task_id FROM placements WHERE project_id=? AND column_id=? ORDER BY position,task_id',(project,col))]
+                if set(tasks)!=set(expected): raise ValueError('Las tareas de la columna cambiaron; vuelve a abrir la confirmación')
+                action=b.get('action')
+                if tasks and action not in ('move','remove','delete'): raise ValueError('Elige qué hacer con las tareas')
+                if not tasks and action not in (None,'move','remove','delete'): raise ValueError('Opción inválida')
+                if action=='move':
+                    dest=b.get('destination_id')
+                    if type(dest) is not int or dest==col or not c.execute('SELECT 1 FROM columns WHERE id=? AND project_id=?',(dest,project)).fetchone(): raise ValueError('Selecciona otra columna del mismo tablero')
+                    position=c.execute('SELECT COALESCE(MAX(position),-1)+1 FROM placements WHERE project_id=? AND column_id=?',(project,dest)).fetchone()[0]
+                    destination=c.execute('SELECT name FROM columns WHERE id=?',(dest,)).fetchone()['name']
+                    for tid in tasks:
+                        c.execute('UPDATE placements SET column_id=?,position=? WHERE task_id=? AND project_id=?',(dest,position,tid,project));position+=1
+                        record(c,tid,u['id'],'movió a '+destination+' al eliminar la columna '+column['name'])
+                elif action=='remove':
+                    for tid in tasks:
+                        c.execute('DELETE FROM placements WHERE task_id=? AND project_id=?',(tid,project))
+                        record(c,tid,u['id'],'quitó la tarea de un proyecto al eliminar la columna '+column['name'])
+                elif action=='delete':
+                    for tid in tasks: delete_task(c,tid,u['id'])
+                c.execute('DELETE FROM columns WHERE id=?',(col,))
+                g.disabled_automations.extend(automations.disable_invalid(c))
+                if action=='move':
+                    for tid in tasks: automate(c,tid,[('column',col,dest)],u['id'],project)
             elif path=='/api/columns/reorder':
                 p=int(b['project_id']); order=b.get('order')
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
@@ -473,8 +513,7 @@ def post_projects(c,u,path,b):
 
 def post_task_types(c,u,path,b):
             if path=='/api/tasks':
-                title=b.get('title','').strip(); parent=b.get('parent_id') or None
-                if not title: raise ValueError('El nombre es obligatorio')
+                title=task_title(b.get('title','')); parent=b.get('parent_id') or None
                 if parent:
                     parent=int(parent)
                     if not can_task(c,u,parent,True): raise PermissionError('Sin permiso para editar la tarea principal')
@@ -580,9 +619,7 @@ def post_tasks(c,u,path,b):
             elif path=='/api/task/delete':
                 tid=int(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')
-                task=c.execute('SELECT title,parent_id FROM tasks WHERE id=?',(tid,)).fetchone()
-                if task['parent_id']: record(c,task['parent_id'],u['id'],'eliminó la subtarea '+task['title'])
-                c.execute('DELETE FROM tasks WHERE id=?',(tid,))
+                delete_task(c,tid,u['id'])
             elif path=='/api/task/update':
                 tid=int(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
@@ -592,8 +629,7 @@ def post_tasks(c,u,path,b):
                 labels={'title':'nombre','description':'descripción','assignee_id':'responsable','due_date':'fecha límite','priority':'prioridad'}
                 for key,label in labels.items():
                     if key in b:
-                        val=b[key] or None if key in ('assignee_id','due_date') else str(b[key]).strip()
-                        if key=='title' and not val: raise ValueError('El nombre es obligatorio')
+                        val=task_title(b[key]) if key=='title' else (b[key] or None if key in ('assignee_id','due_date') else str(b[key]).strip())
                         if key=='description':
                             fmt='html' if b.get('description_format')=='html' else 'plain'
                             if fmt=='html': val=sanitize_description(val)
