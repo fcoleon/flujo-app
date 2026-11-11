@@ -19,6 +19,9 @@ function modal(html,wide=false){
 function waitForModalAnimation(element){return new Promise(resolve=>{let timer=setTimeout(finish,240);function finish(e){if(e&&e.target!==element)return;element.removeEventListener('animationend',finish);clearTimeout(timer);resolve()}element.addEventListener('animationend',finish)})}
 async function closeModal(force=false,animate=!force){
   const container=$('#modal'),overlay=container.querySelector('.overlay'),draft=taskDraft;
+  if(!force&&automationDraft&&automationProject?.role==='admin'&&overlay?.querySelector('#automationForm')&&!confirm('¿Descartar los cambios de la automatización?'))return false;
+  const automationReturn=overlay?.querySelector('.automations')?document.querySelector('.automation-entry'):null;
+  if(overlay?.querySelector('.automations'))automationDraft=null;
   if(overlay?.dataset.closing){if(force&&!animate)overlay.remove();return true}
   if(draft&&!force&&!await flushTaskDraft())return false;
   if(overlay!==container.querySelector('.overlay'))return true;
@@ -30,6 +33,7 @@ async function closeModal(force=false,animate=!force){
   }
   if(overlay?.parentNode===container)overlay.remove();
   else if(!overlay)container.innerHTML='';
+  automationReturn?.focus();
   return true;
 }
 function descriptionText(t){if(t.description_format!=='html')return t.description;let d=document.createElement('div');d.innerHTML=t.description;return d.textContent||''}
@@ -279,7 +283,7 @@ function moveOrder(ids,id,nextId){let result=ids.filter(x=>x!==id);let index=nex
 async function dropTask(e,col){
   e.preventDefault();if(!dragged||!dragPlaceholder||!dragSource)return;
   dragOver(e);
-  let id=dragged,p=data.projects.find(x=>x.id===active),source=dragSource;
+  let id=dragged,p=data.projects.find(x=>x.id===active),source=dragSource,original=data.tasks.find(t=>t.id===id);
   let ids=data.tasks.filter(t=>t.id!==id&&t.placements.some(x=>x.project_id===p.id&&x.column_id===col)).sort((a,b)=>a.placements.find(x=>x.project_id===p.id).position-b.placements.find(x=>x.project_id===p.id).position).map(t=>t.id);
   let next=dragPlaceholder.nextElementSibling;while(next&&(!next.matches('.card[data-id]')||next===source))next=next.nextElementSibling;
   let order=moveOrder(ids,id,next?Number(next.dataset.id):null);
@@ -290,6 +294,8 @@ async function dropTask(e,col){
   try{
     await api('task/move',{id,project_id:p.id,column_id:col,order});
     data=await api('data');
+    let updated=data.tasks.find(t=>t.id===id);
+    if(!updated||updated.placements.find(x=>x.project_id===p.id)?.column_id!==col||['assignee_id','due_date','priority','status_id','type_id'].some(field=>updated[field]!==original[field])){render();return}
     document.querySelectorAll('.column[data-column]').forEach(column=>{let count=column.querySelector('.count');if(count){let col=Number(column.dataset.column);count.textContent=column.classList.contains('column-collapsed')?data.tasks.filter(t=>t.placements.some(x=>x.project_id===p.id&&x.column_id===col)).length:column.querySelectorAll('.cards .card[data-id]').length}});
   }catch(err){toast(err.message);try{await refresh()}catch(refreshError){toast(refreshError.message)}}
   finally{dragSaving=false}
@@ -477,4 +483,68 @@ function setupSubtaskForm(id){
     try{await refresh();if(form.isConnected&&taskId===id){let subs=data.tasks.filter(t=>t.parent_id===id);$('#subtaskList').innerHTML=renderSubtasks(subs);$('#task-tab-subtareas').textContent=`Subtareas (${subs.length})`;add.focus()}toast('Subtarea creada')}catch(err){toast('Subtarea creada, pero no se pudo actualizar el tablero')}
   };
 }
+let automationProject=null, automationRules=[], automationDraft=null;
+const automationFields={column:'Columna',status:'Estado',type:'Tipo de tarea',completion:'Finalización',assignee_id:'Responsable',priority:'Prioridad',due_date:'Fecha de vencimiento',task_kind:'Clase de tarea'};
+const automationTriggers={created:'Tarea creada',column:'Cambio de columna',status:'Cambio de estado',assignee_id:'Cambio de responsable',priority:'Cambio de prioridad',due_date:'Cambio de fecha de vencimiento'};
+const automationActions={column:'Mover a columna',status:'Cambiar estado',assignee_id:'Asignar responsable',priority:'Cambiar prioridad',due_date:'Fijar vencimiento',clear_due_date:'Quitar vencimiento'};
+const automationOps={eq:'es igual a',ne:'es distinto de',has:'tiene valor',empty:'está vacío',overdue:'está vencida',today:'es hoy',before:'es anterior a',after:'es posterior a'};
+function automationOperators(field){return field==='due_date'?['eq','ne','has','empty','overdue','today','before','after']:field==='assignee_id'?['eq','ne','has','empty']:['eq','ne']}
+function automationOptions(field){
+  let p=automationProject;
+  if(field==='column')return p.columns.map(x=>[String(x.id),x.name]);
+  if(field==='type')return p.types.map(x=>[String(x.id),x.name]);
+  if(field==='status')return p.types.flatMap(t=>t.statuses.map(s=>[String(s.id),`${t.name} · ${s.name}`]));
+  if(field==='assignee_id')return [['none','Sin asignar'],...data.users.filter(u=>!u.blocked).map(u=>[String(u.id),u.name])];
+  if(field==='priority')return ['Baja','Normal','Alta'].map(x=>[x,x]);
+  if(field==='completion')return [['done','Finalizada'],['ongoing','En curso']];
+  if(field==='task_kind')return [['parent','Tarea principal'],['subtask','Subtarea']];
+  return [];
+}
+function automationSelect(options,value,attrs,placeholder='Selecciona una opción'){return `<select ${attrs}><option value="">${esc(placeholder)}</option>${options.map(([v,n])=>`<option value="${esc(v)}" ${String(value??'')===v?'selected':''}>${esc(n)}</option>`).join('')}${value&&!options.some(([v])=>v===String(value))?`<option value="${esc(value)}" selected>${esc(value)} (ya no disponible)</option>`:''}</select>`}
+function automationValue(field,value,path,optional=false){
+  let attrs=`aria-label="Valor de ${esc(automationFields[field]||field)}" onchange="${path}=this.value"`;
+  if(field==='due_date')return `<input type="${optional?'text':'date'}" ${optional?'placeholder="Cualquier fecha, none o AAAA-MM-DD"':''} value="${esc(value)}" ${attrs}>`;
+  return automationSelect(automationOptions(field),value,attrs,optional?'Cualquiera':'Selecciona una opción');
+}
+async function openAutomations(){
+  let p=data.projects.find(x=>x.id===active);if(!p||!['admin','editor'].includes(p.role))return;
+  try{let result=await api('automations?'+new URLSearchParams({project_id:p.id}));if(active!==p.id)return;automationProject=p;automationRules=result.rules;automationDraft=null;renderAutomations()}catch(e){toast(e.message)}
+}
+function automationHelp(){return `<details class="automation-help"><summary>Ayuda y referencia de automatizaciones</summary><div>
+  <h3>Cómo funcionan</h3><p>Las reglas pertenecen a este tablero y se evalúan en el orden mostrado. Un gatillante inicia la regla; todas sus condiciones deben cumplirse y sus acciones se aplican en orden. Una acción puede gatillar otras reglas; cada regla se ejecuta como máximo una vez por cadena, con un límite de 100 eventos y 100 reglas por cadena.</p>
+  <h3>Gatillantes</h3><p><b>Tarea creada:</b> al crear una tarea. <b>Columna, estado, responsable, prioridad y fecha:</b> al cambiar el campo. «Desde» y «Hasta» son opcionales: vacío significa cualquier valor. En responsable o fecha usa <code>none</code> para sin asignar o sin fecha; en fecha escribe AAAA-MM-DD.</p>
+  <h3>Condiciones</h3><p>Columna, estado, tipo, finalización, responsable, prioridad, fecha y clase de tarea admiten igualdad y desigualdad. Finalización distingue finalizada (<code>done</code>) y en curso (<code>ongoing</code>) según el estado de la tarea. Responsable y fecha también admiten tiene valor y está vacío; fecha admite además vencida, hoy, anterior y posterior. Las condiciones sin valor no necesitan comparación. Clase distingue tarea principal (<code>parent</code>) y subtarea (<code>subtask</code>). Para comparar sin asignar o sin fecha usa <code>none</code>.</p>
+  <h3>Acciones</h3><p>Mover de columna, cambiar estado, asignar responsable, cambiar prioridad, fijar o quitar vencimiento. Indica una fecha AAAA-MM-DD o un número entero de días desde hoy entre -3650 y 3650: 0 es hoy, positivo es futuro y negativo pasado. «Sin asignar» usa <code>none</code>.</p>
+  <h3>Tableros, tipos y columnas</h3><p>Solo se evalúan las reglas del tablero al que pertenece el tipo de la tarea, y únicamente si la tarea tiene una ubicación explícita en ese tablero. Estar en otro tablero no activa sus reglas por sí solo. Las columnas pertenecen al tablero; sus identificadores son distintos aunque tengan el mismo nombre. Los estados pertenecen a un tipo: elige un estado compatible con el tipo de la tarea. El tipo y estado de una tarea se comparten entre sus tableros. Si se elimina una columna, tipo, estado o usuario, revisa las reglas que lo usaban.</p></div></details>`}
+function renderAutomations(){
+  let admin=automationProject.role==='admin';
+  modal(`<div class="automations"><div class="dialog-head"><div><div class="eyebrow">${esc(automationProject.name)}</div><h2>Automatizaciones</h2></div><button type="button" aria-label="Cerrar" onclick="closeModal()">×</button></div>${automationHelp()}<div id="automationContent">${automationDraft?automationEditor():`<p class="muted">${admin?'Administra las reglas de este tablero.':'Consulta las reglas de este tablero; solo un administrador puede modificarlas.'}</p><div class="automation-list">${automationRules.map((r,i)=>`<div class="automation-rule"><div><strong>${esc(r.name)}</strong><small>${r.enabled?'Activa':'Pausada'} · ${esc(automationTriggers[r.trigger?.type]||r.trigger?.type)}</small></div>${admin?`<div class="automation-controls"><button type="button" onclick="moveAutomation(${i},-1)" ${i===0?'disabled':''} aria-label="Subir ${esc(r.name)}">↑</button><button type="button" onclick="moveAutomation(${i},1)" ${i===automationRules.length-1?'disabled':''} aria-label="Bajar ${esc(r.name)}">↓</button><button type="button" onclick="editAutomation(${i})">Editar</button><button type="button" onclick="toggleAutomation(${i})">${r.enabled?'Pausar':'Activar'}</button><button type="button" onclick="deleteAutomation(${i})">Eliminar</button></div>`:`<button type="button" onclick="editAutomation(${i})">Ver</button>`}</div>`).join('')||'<p class="muted">Todavía no hay automatizaciones.</p>'}</div>${admin?'<button type="button" class="primary" onclick="editAutomation(-1)">＋ Crear automatización</button>':''}`}</div></div>`,true);
+  let dialog=$('#modal .dialog');dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');dialog.setAttribute('aria-label','Automatizaciones');dialog.querySelector('button, summary')?.focus();
+  if(['admin','editor'].includes(automationProject.role)){
+    let section=document.createElement('section');section.className='automation-runs';section.innerHTML='<h3>Últimas ejecuciones</h3><div aria-live="polite">Cargando ejecuciones…</div>';dialog.querySelector('.automations').appendChild(section);loadAutomationRuns(section,automationProject.id);
+  }
+  dialog.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();closeModal()}else if(e.key==='Tab'){let nodes=[...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, textarea:not(:disabled)')].filter(x=>x.getClientRects().length);if(!nodes.length)return;let first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}};
+}
+async function loadAutomationRuns(section,projectId){
+  let content=section.querySelector('[aria-live]');content.textContent='Cargando ejecuciones…';
+  try{
+    let result=await api('automations/runs?'+new URLSearchParams({project_id:projectId}));if(!section.isConnected)return;
+    content.innerHTML=result.runs.map(run=>{let task=data?.tasks.find(t=>t.id===run.task_id),label=run.task_id==null?'Tarea eliminada':task?`${task.title} (#${run.task_id})`:`Tarea #${run.task_id}`;return `<div class="automation-run"><strong>${esc(run.rule_name)}</strong><span>${esc(label)} · ${esc(run.outcome==='success'?'Correcta':run.outcome==='error'?'Error':run.outcome)} · ${esc(run.created_at)}</span>${run.error?`<p>${esc(run.error)}</p>`:''}</div>`}).join('')||'<p class="muted">Todavía no hay ejecuciones.</p>';
+  }catch(e){if(!section.isConnected)return;content.textContent='No se pudieron cargar las ejecuciones: '+e.message+' ';let retry=document.createElement('button');retry.type='button';retry.className='text-button';retry.textContent='Reintentar';retry.onclick=()=>loadAutomationRuns(section,projectId);content.appendChild(retry)}
+}
+function editAutomation(i){automationDraft=i<0?{project_id:automationProject.id,name:'',enabled:true,trigger:{type:'created'},conditions:[],actions:[],position:automationRules.length}:JSON.parse(JSON.stringify(automationRules[i]));automationDraft.project_id=automationProject.id;renderAutomationContent()}
+function renderAutomationContent(){let el=$('#automationContent');el.innerHTML=automationDraft?automationEditor():'';if(automationDraft)el.querySelector('input, select, button')?.focus()}
+function automationEditor(){
+  let r=automationDraft,admin=automationProject.role==='admin',t=r.trigger,hasValue=op=>['eq','ne','before','after'].includes(op);
+  return `<form id="automationForm" onsubmit="saveAutomation(event)"><fieldset ${admin?'':'disabled'}><label>Nombre<input required maxlength="120" value="${esc(r.name)}" oninput="automationDraft.name=this.value"></label><label class="check"><input type="checkbox" ${r.enabled?'checked':''} onchange="automationDraft.enabled=this.checked"> Regla activa</label><h3>Gatillante</h3><label>Cuando ${automationSelect(Object.entries(automationTriggers),t.type,'required onchange="automationDraft.trigger={type:this.value};renderAutomationContent()"')}</label>${t.type!=='created'?`<div class="automation-grid"><label>Desde ${automationValue(t.type,t.from||'','automationDraft.trigger.from',true)}</label><label>Hasta ${automationValue(t.type,t.to||'','automationDraft.trigger.to',true)}</label></div>`:''}<h3>Condiciones</h3><p class="muted">Deben cumplirse todas; sin condiciones se aplica siempre.</p>${r.conditions.map((c,i)=>`<div class="automation-row"><label>Campo ${automationSelect(Object.entries(automationFields),c.field,`required onchange="automationDraft.conditions[${i}]={field:this.value,op:'eq',value:''};renderAutomationContent()"`)}</label><label>Operador ${automationSelect(automationOperators(c.field).map(o=>[o,automationOps[o]]),c.op,`required onchange="automationDraft.conditions[${i}].op=this.value;automationDraft.conditions[${i}].value='';renderAutomationContent()"`)}</label>${hasValue(c.op)?`<label>Valor ${c.field==='due_date'?`<input type="text" required placeholder="AAAA-MM-DD o none" value="${esc(c.value)}" onchange="automationDraft.conditions[${i}].value=this.value">`:automationValue(c.field,c.value,`automationDraft.conditions[${i}].value`)}</label>`:''}<button type="button" onclick="automationDraft.conditions.splice(${i},1);renderAutomationContent()" aria-label="Eliminar condición ${i+1}">×</button></div>`).join('')}<button type="button" class="text-button" onclick="automationDraft.conditions.push({field:'column',op:'eq',value:''});renderAutomationContent()" ${r.conditions.length>=20?'disabled':''}>＋ Agregar condición</button><h3>Acciones</h3>${r.actions.map((a,i)=>`<div class="automation-row"><label>Acción ${automationSelect(Object.entries(automationActions),a.type,`required onchange="automationDraft.actions[${i}]={type:this.value,value:''};renderAutomationContent()"`)}</label>${a.type==='clear_due_date'?'':`<label>Valor ${a.type==='due_date'?`<input type="text" required placeholder="Días relativos o AAAA-MM-DD" value="${esc(typeof a.value==='object'&&a.value!==null?a.value.days:a.value)}" onchange="automationDraft.actions[${i}].value=this.value" aria-label="Días relativos o fecha">`:automationValue(a.type,a.value,`automationDraft.actions[${i}].value`)}</label>`}<button type="button" onclick="automationDraft.actions.splice(${i},1);renderAutomationContent()" aria-label="Eliminar acción ${i+1}">×</button></div>`).join('')}<button type="button" class="text-button" onclick="automationDraft.actions.push({type:'column',value:''});renderAutomationContent()" ${r.actions.length>=20?'disabled':''}>＋ Agregar acción</button></fieldset><div class="dialog-actions"><button type="button" class="outline" onclick="backAutomations()">${admin?'Cancelar':'Volver'}</button>${admin?'<button type="submit" class="primary">Guardar</button>':''}</div></form>`
+}
+function backAutomations(){if(automationProject.role==='admin'&&!confirm('¿Descartar los cambios de la automatización?'))return;automationDraft=null;renderAutomations()}
+async function saveAutomation(e){e.preventDefault();let r=automationDraft;if(automationProject.role!=='admin')return;if(!r.name.trim())return toast('Escribe un nombre para la regla');if(!r.actions.length)return toast('Agrega al menos una acción');if(r.conditions.some(c=>['eq','ne','before','after'].includes(c.op)&&!c.value)||r.actions.some(a=>a.type!=='clear_due_date'&&!String(a.value??'').trim()))return toast('Completa todos los valores');for(let v of [...(r.trigger.type==='due_date'?[r.trigger.from,r.trigger.to]:[]),...r.conditions.filter(c=>c.field==='due_date'&&['eq','ne','before','after'].includes(c.op)).map(c=>c.value)])if(v&&v!=='none'&&(!/^\d{4}-\d{2}-\d{2}$/.test(v)||!Number.isFinite(Date.parse(v+'T00:00:00Z'))||new Date(v+'T00:00:00Z').toISOString().slice(0,10)!==v))return toast('Usa una fecha válida AAAA-MM-DD o none');
+  let payload={...r,name:r.name.trim(),trigger:{...r.trigger},conditions:r.conditions.map(c=>({...c,value:['eq','ne','before','after'].includes(c.op)?String(c.value):''})),actions:r.actions.map(a=>({...a}))};if(!payload.id)delete payload.id;for(let k of ['from','to'])if(!payload.trigger[k]||payload.trigger[k]==='*')delete payload.trigger[k];let button=e.submitter||e.target.querySelector('[type=submit],button.primary');button.disabled=true;try{await api('automations/save',payload);if(automationDraft===r){automationDraft=null;await reloadAutomations()}}catch(err){button.disabled=false;toast(err.message)}}
+async function reloadAutomations(){let project=automationProject,dialog=$('#modal .automations'),result=await api('automations?'+new URLSearchParams({project_id:project.id}));if(automationProject!==project||!dialog?.isConnected)return;automationRules=result.rules;renderAutomations()}
+async function moveAutomation(i,delta){let order=automationRules.map(r=>r.id),j=i+delta;if(j<0||j>=order.length)return;[order[i],order[j]]=[order[j],order[i]];try{await api('automations/reorder',{project_id:automationProject.id,order});await reloadAutomations()}catch(e){toast(e.message)}}
+async function toggleAutomation(i){let r=automationRules[i];try{await api('automations/save',{id:r.id,project_id:automationProject.id,name:r.name,enabled:!r.enabled,trigger:r.trigger,conditions:r.conditions,actions:r.actions,position:r.position??i});await reloadAutomations()}catch(e){toast(e.message)}}
+async function deleteAutomation(i){let r=automationRules[i];if(!confirm(`¿Eliminar la automatización «${r.name}»?`))return;try{await api('automations/delete',{project_id:automationProject.id,id:r.id});await reloadAutomations()}catch(e){toast(e.message)}}
+const renderBoardWithoutAutomations=render;
+render=function(){renderBoardWithoutAutomations();let p=data.projects.find(x=>x.id===active),heading=$('.project-title-row');if(p&&['admin','editor'].includes(p.role)&&heading){let button=document.createElement('button');button.type='button';button.className='automation-entry';button.textContent='⚡ Automatizaciones';button.onclick=openAutomations;heading.appendChild(button)}};
 start();
