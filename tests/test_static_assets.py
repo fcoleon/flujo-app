@@ -5,9 +5,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+from xml.etree import ElementTree
 
 
 class StaticAssetsTest(unittest.TestCase):
+    def test_favicon_reference_and_content(self):
+        client=app.app.test_client()
+        html=client.get('/').get_data(as_text=True)
+        match=re.search(r'href="(/static/favicon\.svg\?v=[0-9a-f]{16})"',html)
+        self.assertIsNotNone(match)
+        response=client.get(match.group(1))
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.mimetype,'image/svg+xml')
+        self.assertEqual(ElementTree.fromstring(response.data).tag,'{http://www.w3.org/2000/svg}svg')
+        response.close()
+
     def test_versions_follow_source_content_and_revalidate_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
