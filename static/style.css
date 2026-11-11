@@ -25,6 +25,7 @@
 .quick-control:hover{filter:brightness(.94)}
 .task-property[data-property="due_date"] .detail-control:not(.read-only):hover .date-value{color:#725bd1}
 .status-option .avatar{width:19px;height:19px;flex:none;font-size:8px}
+.automation-notice{border:0;width:min(520px,calc(100% - 40px));color:#28283a}.automation-notice::backdrop{background:#24203280}.automation-notice p,.automation-notice li{line-height:1.5;overflow-wrap:anywhere}.automation-rule .automation-disabled-reason{color:#a34836}
 .quick-control:focus-within{outline:2px solid #a591e3;outline-offset:2px}
 .quick-control>span{pointer-events:none}
 .quick-control select{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
