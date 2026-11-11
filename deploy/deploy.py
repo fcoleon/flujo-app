@@ -269,9 +269,10 @@ def installed_socket_group(user, socket_path=None, requested_group=None):
 
 
 def prepare_venv(user, db_path, timezone, create=True):
-    if not (APP_DIR / 'app.py').is_file() or not (APP_DIR / 'settings.py').is_file() or not (APP_DIR / 'templates' / 'index.html').is_file():
+    modules = [APP_DIR / name for name in ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py')]
+    if not all(path.is_file() for path in (*modules, APP_DIR / 'templates' / 'index.html')):
         fail(f'No se encontró la aplicación completa en {APP_DIR}. Copia sus archivos antes de continuar.')
-    for path in (APP_DIR, APP_DIR / 'app.py', APP_DIR / 'settings.py', APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'style.css', 'favicon.svg'))):
+    for path in (APP_DIR, *modules, APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'style.css', 'favicon.svg'))):
         try:
             as_user(user, 'test', '-x' if path.is_dir() else '-r', path)
         except subprocess.CalledProcessError:
