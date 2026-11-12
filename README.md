@@ -22,7 +22,7 @@ En ejecución local, las siguientes variables opcionales tienen prioridad sobre 
 | --- | --- | --- |
 | `PORT` | `8000` | Puerto del servidor local. |
 | `TASKS_DB` | `tasks.db` | Ruta del archivo SQLite. |
-| `TASKS_TIMEZONE` | `America/Santiago` | Zona horaria IANA usada para estadísticas y agrupación por vencimiento en «Mis tareas». |
+| `TASKS_TIMEZONE` | `America/Santiago` | Zona horaria IANA usada para estadísticas, filtros de proyecto y agrupación por vencimiento en «Mis tareas». |
 | `APP_CONFIG` | `config.ini` en la raíz | Archivo de configuración alternativo. |
 
 Por ejemplo, para una prueba manual con una base temporal y otro puerto:
@@ -53,6 +53,14 @@ Las peticiones POST a la API usan `Content-Type: application/json` y un objeto J
 - Automatizaciones por proyecto con gatillantes, condiciones y acciones sobre tareas, además de historial de ejecuciones.
 
 Los enlaces de proyecto usan `/board/<uuid>` y los de tarea `/board/<uuid>/task/<uuid>`; las tareas sin proyecto usan `/board/no-project/task/<uuid>`. Mis tareas está en `/my-tasks`. Los enlaces de tarea anteriores siguen funcionando y ningún enlace concede permisos adicionales.
+
+### Filtros de proyecto
+
+El botón **Filtros** está disponible en las vistas Tablero y Lista. Ofrece filtros rápidos de tareas sin finalizar, asignadas a mí y finalizadas; estas últimas pueden limitarse a hoy, ayer, esta semana o este mes. Los filtros de responsable, tipo, fecha límite, prioridad y estado pueden combinarse entre sí y con los rápidos. Se puede limpiar toda la selección desde el panel.
+
+Los filtros se evalúan en el navegador con los datos accesibles ya cargados. Se guardan por usuario y proyecto en `sessionStorage`: sobreviven a las recargas de esa pestaña durante la sesión, pero no se sincronizan entre dispositivos. Las fechas se interpretan en la zona horaria configurada; la semana comienza el lunes.
+
+Las tareas finalizadas antiguas cuya fecha de finalización no pudo recuperarse aparecen al elegir **Todas** las finalizadas, pero no en los períodos de fecha. La fecha se registra en las nuevas finalizaciones y se limpia al reabrir la tarea.
 
 ### Mis tareas
 

@@ -1,0 +1,47 @@
+// Run with: node tests/test_project_filters.js
+const source=require('fs').readFileSync('static/app.js','utf8');
+let storage=new Map(),active=10,statusMenu=null,statusMenuTrigger=null,renders=0,panel,trigger;
+let data={user:{id:9},stats_timezone:'America/Santiago',users:[{id:9,name:'Yo'},{id:8,name:'Otra'}],projects:[],tasks:[]};
+const sessionStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)};
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function taskStatus(task){return {is_done:task.done}} function renderBoard(){renders++} function closeStatusMenu(){}
+const controls=['period','assignee','type','due','date','priority','status'].map(field=>({dataset:{field},value:''}));
+const quicks=['open','mine','done'].map(kind=>({dataset:{quick:kind},classList:{toggle(name,on){this.on=on}},setAttribute(){},focus(){}}));
+let period={hidden:false},date={hidden:false};
+const document={body:{appendChild(){}},createElement(){return panel={style:{},offsetHeight:400,offsetWidth:360,handlers:{},setAttribute(){},remove(){},contains(){return false},addEventListener(name,fn){this.handlers[name]=fn},querySelectorAll(selector){return selector==='[data-field]'?controls:quicks},querySelector(selector){return selector==='[data-period]'?period:selector==='[data-date]'?date:quicks[0]}}},addEventListener(){},removeEventListener(){}};
+const window={innerWidth:1000,innerHeight:800,addEventListener(){},removeEventListener(){}};
+const $=selector=>selector==='.project-filter-trigger'?trigger:null;
+const assert=(value,message)=>{if(!value)throw Error(message)};
+eval(source.slice(source.indexOf('const projectFilterCache='),source.indexOf('const listCollapsedState='))+`
+  let type={id:4,name:'Tipo',statuses:[{id:7,name:'Listo'}]},project={id:10,public_id:'p1',types:[type]};data.projects=[project];
+  let f=projectFilters(project),dates=projectFilterDates('2026-01-05');
+  assert(dates.yesterday==='2026-01-04'&&dates.weekStart==='2026-01-05'&&dates.weekEnd==='2026-01-11','semana y ayer');
+  let task={done:true,completed_at:'2026-01-05T04:00:00Z',assignee_id:9,type_id:4,status_id:7,priority:'Alta',due_date:'2026-01-05'};
+  Object.assign(f,{completion:'done',period:'today',assignee:'9',type:'4',status:'7',priority:'Alta',due:'today'});
+  assert(matchesProjectFilters(task,f,dates),'combina filtros por tipo');
+  assert(!matchesProjectFilters({...task,assignee_id:8},f,dates)&&!matchesProjectFilters({...task,completed_at:null},f,dates),'excluye valores distintos y fechas desconocidas');
+  f.period='yesterday';assert(matchesProjectFilters({...task,completed_at:'2026-01-05T02:00:00Z'},f,dates),'usa zona horaria para ayer');
+  f.period='all';assert(matchesProjectFilters({...task,completed_at:null},f,dates),'todas incluye fechas desconocidas');
+  f.period='week';assert(matchesProjectFilters({...task,completed_at:'2026-01-11T15:00:00Z'},f,dates)&&!matchesProjectFilters({...task,completed_at:'2026-01-04T15:00:00Z'},f,dates),'semana de lunes a domingo');
+  f.period='month';assert(matchesProjectFilters(task,f,dates)&&!matchesProjectFilters({...task,completed_at:'2025-12-31T15:00:00Z'},f,dates),'mes de finalización');
+  Object.assign(f,{completion:'open',period:'all',assignee:'',type:'',status:'',priority:'',due:'none'});
+  assert(matchesProjectFilters({...task,done:false,due_date:null},f,dates)&&!matchesProjectFilters({...task,done:false},f,dates),'fecha sin asignar');
+  f.due='date';f.date='2026-02-03';assert(matchesProjectFilters({...task,done:false,due_date:'2026-02-03'},f,dates),'fecha específica');
+  assert(projectFilterDates('2025-12-31').weekEnd==='2026-01-04','semana entre años');
+  f.priority='Alta';
+  saveProjectFilters(project,f);projectFilterCache.clear();assert(projectFilters(project).priority==='Alta','persiste durante la sesión');
+  assert(projectFilters({id:11,public_id:'p2'}).priority==='','aísla proyectos');data.user.id=8;
+  assert(projectFilters(project).priority==='','aísla usuarios');data.user.id=9;
+  let other={id:11,public_id:'p2',types:[type]};data.projects.push(other);
+  trigger={isConnected:true,classList:{toggle(){}},setAttribute(){},getBoundingClientRect:()=>({left:20,top:10,bottom:30}),focus(){}};
+  active=11;openProjectFilters(trigger);assert(panel.innerHTML.includes('Tipo · Listo')&&panel.innerHTML.includes('Fecha específica'),'muestra filtros y estados');
+  let mine=quicks.find(q=>q.dataset.quick==='mine');panel.handlers.click({target:{closest:s=>s==='[data-quick]'?mine:null}});
+  assert(projectFilters(other).assignee==='9'&&renders===1,'filtro rápido local');
+  let assignee=controls.find(c=>c.dataset.field==='assignee');assignee.value='8';panel.handlers.change({target:assignee});
+  let specific=controls.find(c=>c.dataset.field==='type');specific.value='4';panel.handlers.change({target:specific});
+  assert(projectFilters(other).assignee==='8'&&projectFilters(other).type==='4'&&!mine.classList.on,'combina tipos sin duplicar responsable');
+  let done=quicks.find(q=>q.dataset.quick==='done');panel.handlers.click({target:{closest:s=>s==='[data-quick]'?done:null}});
+  assert(projectFilters(other).completion==='done'&&!period.hidden,'ofrece períodos al elegir finalizadas');
+  panel.handlers.click({target:{closest:s=>s==='[data-clear]'?{}:null}});
+  assert(projectFilterCount(projectFilters(other))===0&&renders===5,'elimina todos los filtros');
+`);
