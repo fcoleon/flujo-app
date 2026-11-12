@@ -5,15 +5,15 @@ assert.deepStrictEqual=(a,b)=>assert(JSON.stringify(a)===JSON.stringify(b),JSON.
 const source=readFile('static/app.js');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let data={user:{admin:true},projects:[{id:1,name:'Admin <proyecto>',role:'admin'},{id:2,name:'Lector',role:'viewer'}]};
-let requests=[],html='',form,dialog,handlers={},messages=[],destination,previous={hidden:false},focused=false;
+let requests=[],html='',form,dialog,handlers={},messages=[],destination,previous={hidden:false},focused=false,confirmations=0;
 const group=(id,assignment,comment,completion)=>({dataset:{project:id},insertAdjacentHTML(position,value){html+=value},remove(){},querySelector(s){return s.includes('assignment')?{checked:assignment}:s.includes('comment')?{checked:comment}:completion==null?null:{checked:completion}}});
-form={elements:{enabled:{checked:true},hour:{value:'9'}},addEventListener(){},querySelectorAll(s){return s==='[data-project]'?[group('',true,false,null),group('1',false,true,true),group('2',true,true,null)]:[{value:'0'},{value:'4'}]}};
-dialog={isConnected:true,setAttribute(){},set innerHTML(value){html=value},get innerHTML(){return html},showModal(){},close(){handlers.close()},remove(){},addEventListener(name,fn){handlers[name]=fn},querySelector(s){if(s==='button')return {};if(s==='#slackForm')return form;if(s==='#slackError')return {textContent:''};if(s==='#slackTitle')return {classList:{add(){}},insertAdjacentHTML(position,icon){html+=icon}}},querySelectorAll(){return []}};
-const document={activeElement:{focus(){focused=true}},querySelector(){return previous},createElement(){return dialog},body:{appendChild(){}}};
+form={elements:{enabled:{checked:true},hour:{value:'9'}},before(){},addEventListener(name,fn){if(name==='change')this.change=fn},querySelector(){return {classList:{add(){}},insertAdjacentHTML(position,value){html+=value}}},querySelectorAll(s){return s==='[data-project]'?[group('',true,false,null),group('1',false,true,true),group('2',true,true,null)]:[{value:'0'},{value:'4'}]}};
+dialog={isConnected:true,get firstElementChild(){return form},setAttribute(){},set innerHTML(value){html=value},get innerHTML(){return html},showModal(){},close(){handlers.close()},remove(){},addEventListener(name,fn){handlers[name]=fn},querySelector(s){if(s==='button')return {};if(s==='#slackForm')return form;if(s==='#slackError')return {textContent:''};if(s==='#slackTitle')return {classList:{add(){}},insertAdjacentHTML(position,icon){html+=icon}}},querySelectorAll(){return []}};
+const document={activeElement:{focus(){focused=true}},querySelector(){return previous},createElement(tag){return tag==='dialog'?dialog:{appendChild(){}}},body:{appendChild(){}}};
 function slackIcon(){return '<svg class="slack-icon"></svg>'}
 const status={configured:true,installation:{team_name:'Equipo',team_id:'T1'},account:{slack_user_id:'U1'},preferences:[{project_id:null,assignment:true},{project_id:1,completion:true}],summary:{enabled:true,hour:9,weekdays:[0,4]}};
 async function api(path,body){requests.push({path,body});return path==='slack/status'?status:path.endsWith('/start')?{url:'https://slack.com/oauth'}:{}}
-function toast(message){messages.push(message)} function confirm(){return true}
+function toast(message){messages.push(message)} function confirm(){confirmations++;return true}
 const location={assign(url){destination=url}};
 eval(source.slice(source.indexOf('function slackPreferenceFields('),source.indexOf('async function setWorkspaceBlocked('))+`
   (async()=>{
@@ -23,6 +23,7 @@ eval(source.slice(source.indexOf('function slackPreferenceFields('),source.index
     assert(html.includes('Admin &lt;proyecto&gt;'));
     assert(html.includes('<table class="slack-preferences">'),'muestra preferencias en tabla');
     assert(html.includes('scope="col">Proyecto'),'muestra el encabezado de proyecto');
+    assert(html.includes('data-action="close">Cancelar</button>'),'muestra cancelar en el pie');
     let table=slackPreferenceTable([{id:null,name:'Sin proyecto'}],[]);
     assert(!table.includes('name="completion"'),'sin proyecto no tiene opción de finalización');
     assert(html.includes('data-action="disconnect"')&&html.includes('data-action="unlink"'));
@@ -39,7 +40,7 @@ eval(source.slice(source.indexOf('function slackPreferenceFields('),source.index
     click('link/start');await Promise.resolve();await Promise.resolve();
     assert.deepStrictEqual(requests[3],{path:'slack/link/start',body:{}});
     assert.strictEqual(destination,'https://slack.com/oauth');
-    dialog.close();assert(!previous.hidden&&focused,'restaura el modal y el foco');
+    form.change();click('close');assert(confirmations===1&&!previous.hidden&&focused,'cancelar confirma cambios y restaura modal y foco');
     data.user.admin=false;slackSettings();await Promise.resolve();
     assert(!html.includes('data-action="disconnect"'));
     assert(html.includes('<table class="slack-preferences">'));
