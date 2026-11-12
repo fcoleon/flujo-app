@@ -473,7 +473,7 @@ class TaskTypesTest(unittest.TestCase):
         tasks=accessible(4)
         self.assertIn(orphan,tasks);self.assertFalse(tasks[orphan]['has_projects']);self.assertTrue(tasks[orphan]['can_edit'])
         self.assertNotIn(with_project,tasks);self.assertNotIn(unrelated,tasks)
-        self.assertEqual(self.post('task/update',{'id':orphan,'title':'Responsable puede editar'},user=4)[0],200)
+        self.assertEqual(self.post('task/update',{'id':orphan,'title':'Responsable puede editar','title_version':0},user=4)[0],200)
         self.assertEqual(self.post('task/update',{'id':with_project,'title':'No permitido'},user=4)[0],403)
         with app.db() as c: c.execute("INSERT INTO members VALUES(2,4,'viewer')")
         self.assertIn(with_project,accessible(4))
@@ -547,7 +547,7 @@ class TaskTypesTest(unittest.TestCase):
             status,result=self.post('tasks',{'title':title,'project_id':1,'column_id':1},user=2)
             self.assertEqual(status,400);self.assertIn('saltos de línea',result['error'])
         tid=self.post('tasks',{'title':'Título válido','project_id':1,'column_id':1},user=2)[1]['id']
-        status,result=self.post('task/update',{'id':tid,'title':'Otro\nTítulo','priority':'Alta'},user=2)
+        status,result=self.post('task/update',{'id':tid,'title':'Otro\nTítulo','title_version':0,'priority':'Alta'},user=2)
         self.assertEqual(status,400);self.assertIn('saltos de línea',result['error'])
         with app.db() as c:
             task=c.execute('SELECT title,priority FROM tasks WHERE id=?',(tid,)).fetchone()
