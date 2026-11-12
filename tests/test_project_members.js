@@ -10,10 +10,13 @@ eval(source.slice(source.indexOf('function projectMemberStack('),source.indexOf(
   let members=Array.from({length:7},(_,i)=>({id:i+1,name:'Persona '+(i+1),username:'user'+(i+1),role:'editor'}));
   let project={id:1,name:'Tablero',role:'viewer',members:members.slice(0,5)};data.projects=[project];
   let stack=projectMemberStack(project);assert((stack.match(/class="avatar"/g)||[]).length===5&&!stack.includes('member-more'),'hasta cinco avatares');
+  let control=projectMemberButton(project);assert(control.includes('onclick="openProjectMembers()"')&&control.includes('aria-label="Ver usuarios del proyecto"'),'todo el grupo es accesible');
+  project.members=members.slice(0,1);assert(projectMemberButton(project).includes('onclick="openProjectMembers()"'),'un miembro también permite abrir la lista');
+  project.members=[];assert(projectMemberButton(project).includes('member-more'),'tablero sin miembros permite abrir la lista');
   project.members=members.slice(0,6);stack=projectMemberStack(project);
   assert((stack.match(/class="avatar"/g)||[]).length===5&&stack.includes('member-more'),'seis muestran cinco y acceso al resto');
   project.members=members;stack=projectMemberStack(project);
-  assert((stack.match(/class="avatar"/g)||[]).length===4&&stack.includes('member-more'),'más de seis muestran cuatro y acceso');
+  assert((stack.match(/class="avatar"/g)||[]).length===4&&stack.includes('member-more')&&!projectMemberButton(project).includes('<button type="button" class="avatar'),'más de seis muestran cuatro y acceso sin botones anidados');
   openProjectMembers();assert(html.includes('Persona 7')&&!html.includes('<select')&&!edited,'vista de solo lectura');
   project.role='admin';openProjectMembers();assert(edited&&tab==='usuarios','administrador abre edición de usuarios');
 `);

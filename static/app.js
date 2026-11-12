@@ -900,14 +900,15 @@ function renderMyTasks(){
 }
 function projectMemberStack(project){
   let count=project.members.length,shown=count>6?4:5;
-  return project.members.slice(0,shown).map(member=>avatar(member.name)).join('')+(count>5?'<button type="button" class="avatar member-more" aria-label="Ver todos los usuarios del tablero" title="Ver todos los usuarios del tablero" onclick="openProjectMembers()">···</button>':'');
+  return project.members.slice(0,shown).map(member=>avatar(member.name)).join('')+(count>5||count===0?'<span class="avatar member-more" aria-hidden="true">···</span>':'');
 }
+function projectMemberButton(project){return `<button type="button" class="member-stack-trigger" aria-label="Ver usuarios del proyecto" title="Ver usuarios del proyecto" onclick="openProjectMembers()">${projectMemberStack(project)}</button>`}
 function openProjectMembers(){
   let project=data.projects.find(p=>p.id===active);if(!project)return;
   if(project.role==='admin'){editProject();setProjectSettingsTab('usuarios');$('#project-tab-usuarios')?.focus();return}
   let roles={admin:'Administrador',editor:'Editor',viewer:'Lector'};
-  modal(`<div class="dialog-head"><div><div class="eyebrow">${esc(project.name)}</div><h2>Usuarios del tablero</h2></div><button type="button" aria-label="Cerrar" onclick="closeModal()">×</button></div><div class="people-list">${project.members.map(member=>`<div class="person">${avatar(member.name)}<div><strong>${esc(member.name)}</strong><small>@${esc(member.username)} · ${esc(roles[member.role]||member.role)}</small></div></div>`).join('')||'<p class="muted">No hay usuarios asociados.</p>'}</div>`);
-  let dialog=$('#modal .dialog');dialog?.setAttribute('role','dialog');dialog?.setAttribute('aria-modal','true');dialog?.setAttribute('aria-label','Usuarios del tablero');dialog?.querySelector('button')?.focus();
+  modal(`<div class="dialog-head"><div><div class="eyebrow">${esc(project.name)}</div><h2>Usuarios del proyecto</h2></div><button type="button" aria-label="Cerrar" onclick="closeModal()">×</button></div><div class="people-list">${project.members.map(member=>`<div class="person">${avatar(member.name)}<div><strong>${esc(member.name)}</strong><small>@${esc(member.username)} · ${esc(roles[member.role]||member.role)}</small></div></div>`).join('')||'<p class="muted">No hay usuarios asociados.</p>'}</div>`);
+  let dialog=$('#modal .dialog');dialog?.setAttribute('role','dialog');dialog?.setAttribute('aria-modal','true');dialog?.setAttribute('aria-label','Usuarios del proyecto');dialog?.querySelector('button')?.focus();
 }
 const renderBoardWithoutAutomations=render;
 render=function(){
@@ -916,7 +917,7 @@ render=function(){
   if(active==='mine'){renderMyTasks();return}
   if(p){
     let settings=heading?.querySelector('.project-settings-trigger');if(settings){settings.setAttribute('aria-label','Editar proyecto');settings.dataset.tooltip='Editar proyecto'}
-    let stack=$('.member-stack');if(stack)stack.innerHTML=projectMemberStack(p);
+    let stack=$('.member-stack');if(stack)stack.innerHTML=projectMemberButton(p);
     let first=$('.tabs > .tab');if(first){let tab=document.createElement('button');tab.type='button';tab.className='tab'+(boardView==='list'?' active':'');tab.textContent='☷  Lista';tab.onclick=()=>setBoardView('list');first.after(tab)}
     if(boardView==='board'||boardView==='list'){let tabs=$('.tabs');if(tabs){let button=document.createElement('button');button.type='button';button.className='project-filter-trigger';button.setAttribute('aria-haspopup','dialog');button.setAttribute('aria-expanded','false');button.onclick=()=>openProjectFilters(button);let right=tabs.querySelector('.tab-right');tabs.insertBefore(button,right||null);updateProjectFilterButton(p)}}
     if(boardView==='list'){
