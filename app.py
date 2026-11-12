@@ -100,6 +100,20 @@ def init():
         if 'description_format' not in {r['name'] for r in c.execute('PRAGMA table_info(tasks)')}:
             c.execute("ALTER TABLE tasks ADD COLUMN description_format TEXT NOT NULL DEFAULT 'plain'")
         automations.init(c)
+        for name in ('title_version','description_version'):
+            if name not in {r['name'] for r in c.execute('PRAGMA table_info(tasks)')}:
+                c.execute(f'ALTER TABLE tasks ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0')
+        c.execute('CREATE TABLE IF NOT EXISTS data_revision(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)')
+        c.execute('INSERT OR IGNORE INTO data_revision VALUES(1,0)')
+        for table in ('users','projects','members','columns','tasks','placements','history','comments','task_types','task_statuses','automation_rules','automation_runs','metric_events','app_meta'):
+            for action in ('INSERT','UPDATE','DELETE'):
+                c.execute(f'''CREATE TRIGGER IF NOT EXISTS revision_{table}_{action.lower()} AFTER {action} ON {table}
+                              BEGIN UPDATE data_revision SET revision=revision+1 WHERE id=1; END''')
+        c.execute('''CREATE TRIGGER IF NOT EXISTS task_content_versions AFTER UPDATE OF title,description,description_format ON tasks
+                     WHEN OLD.title IS NOT NEW.title OR OLD.description IS NOT NEW.description OR OLD.description_format IS NOT NEW.description_format
+                     BEGIN UPDATE tasks SET title_version=title_version+(OLD.title IS NOT NEW.title),
+                         description_version=description_version+(OLD.description IS NOT NEW.description OR OLD.description_format IS NOT NEW.description_format)
+                         WHERE id=NEW.id; END''')
 
 def create_type(c, project_id, name, is_base=False):
     # Historical metrics retain type IDs even after a type is deleted.
@@ -231,6 +245,7 @@ def api_get():
     path=request.path
     try:
         with closing(db()) as c, c:
+            if path=='/api/data': c.execute('BEGIN')
             u=current_user(c)
             flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone() if u else None
             blocked=bool(flags and flags['blocked']);must_change=bool(flags and flags['must_change_password'])
@@ -238,6 +253,7 @@ def api_get():
             if not u: return respond({'error':'Inicia sesión'},401)
             if blocked: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
             if must_change: return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
+            if path=='/api/revision': return respond({'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0]})
             if path=='/api/data':
                 projects=[]
                 for p in c.execute('SELECT * FROM projects ORDER BY id').fetchall():
@@ -256,7 +272,7 @@ def api_get():
                     if can_task(c,u,t['id']):
                         projects_for_task=task_projects(c,t['id']); explicit={r['project_id'] for r in c.execute('SELECT project_id FROM placements WHERE task_id=?',(t['id'],))}
                         d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None; tasks.append(d)
-                return respond({'user':dict(u),'version':VERSION,'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
+                return respond({'user':dict(u),'version':VERSION,'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
             if path=='/api/analytics':
                 params=request.args.to_dict(flat=False); p=int(params['project_id'][0]); month=params['month'][0]
                 if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)
@@ -635,6 +651,11 @@ def post_tasks(c,u,path,b):
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
                 old=c.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
                 if not old: raise ValueError('Tarea no encontrada')
+                for key in ('title','description'):
+                    if key in b:
+                        version=key+'_version'
+                        if type(b.get(version)) is not int or b[version]<0: raise ValueError(f'El campo {version} es obligatorio y debe ser un entero no negativo')
+                        if b[version]!=old[version]: return respond({'error':'La tarea cambió; vuelve a cargar','conflict':True},409)
                 events=[]
                 labels={'title':'nombre','description':'descripción','assignee_id':'responsable','due_date':'fecha límite','priority':'prioridad'}
                 for key,label in labels.items():
@@ -643,11 +664,16 @@ def post_tasks(c,u,path,b):
                         if key=='description':
                             fmt='html' if b.get('description_format')=='html' else 'plain'
                             if fmt=='html': val=sanitize_description(val)
-                            c.execute('UPDATE tasks SET description_format=? WHERE id=?',(fmt,tid))
+                            if old['description_format']!=fmt and str(old[key] or '')==str(val or ''):
+                                c.execute('UPDATE tasks SET description_format=? WHERE id=?',(fmt,tid))
                         if str(old[key] or '')!=str(val or ''):
-                            c.execute(f'UPDATE tasks SET {key}=? WHERE id=?',(val,tid)); record(c,tid,u['id'],f'actualizó {label}')
+                            if key=='description': c.execute('UPDATE tasks SET description=?,description_format=? WHERE id=?',(val,fmt,tid))
+                            else: c.execute(f'UPDATE tasks SET {key}=? WHERE id=?',(val,tid))
+                            record(c,tid,u['id'],f'actualizó {label}')
                             if key in ('assignee_id','priority','due_date'): events.append((key,old[key],val))
                 if events: automate(c,tid,events,u['id'])
+                task=c.execute('SELECT title,description,description_format,title_version,description_version FROM tasks WHERE id=?',(tid,)).fetchone()
+                return respond({'ok':True,**dict(task)})
             elif path=='/api/task/move':
                 tid=int(b['id']); p=int(b['project_id']); col=int(b['column_id']); order=b['order']
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')

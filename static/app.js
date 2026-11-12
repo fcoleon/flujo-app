@@ -5,7 +5,8 @@ let taskTab='detalle', boardView='board', statsMonth='', statsType='', statsRequ
 const cardMotion=new WeakMap();
 let columnDrag=null, columnGhost=null, columnSource=null, columnSaving=false;
 const columnMotion=new WeakMap();
-async function api(path,body){let r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(r.status===429)throw Error('Demasiados intentos. Espera un momento y vuelve a intentarlo.');let d=await r.json();if(!r.ok){if(d.blocked)showBlocked();else if(d.password_change_required)showPasswordChange();throw Error(d.error||'Ocurrió un error')}if(d.disabled_automations?.length)showDisabledAutomations(d.disabled_automations);return d}
+let dataRequest=0, mutationEpoch=0, pendingMutations=0;
+async function api(path,body){if(body){mutationEpoch++;pendingMutations++}try{let r=await fetch('/api/'+path,{method:body?'POST':'GET',cache:'no-store',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(r.status===429)throw Error('Demasiados intentos. Espera un momento y vuelve a intentarlo.');let d=await r.json();if(!r.ok){if((d.blocked||d.password_change_required||r.status===401)&&taskDraft){clearTimeout(taskDraft.timer);taskDraft.denied=true;taskDraft.status.textContent='Acceso perdido; conserva y copia tu borrador';}else if(d.blocked)showBlocked();else if(d.password_change_required)showPasswordChange();let error=Error(d.error||'Ocurrió un error');error.status=r.status;error.conflict=d.conflict;throw error}if(d.disabled_automations?.length)showDisabledAutomations(d.disabled_automations);return d}finally{if(body){pendingMutations--;mutationEpoch++}}}
 let disabledAutomationQueue=[],disabledAutomationDialog=null;
 function disabledAutomationItems(){return disabledAutomationQueue.map(rule=>`<li><strong>${esc(rule.name)}</strong> · ${esc(rule.project_name)}: ${esc(rule.reason)}</li>`).join('')}
 function showDisabledAutomations(rules){
@@ -72,8 +73,48 @@ function normalizeSearch(value){return String(value??'').normalize('NFD').replac
 function matchesSearch(t,query){let q=normalizeSearch(query);return !q||normalizeSearch(t.title).includes(q)||normalizeSearch(descriptionText(t)).includes(q)}
 function avatar(name){return `<span class="avatar">${esc((name||'?').split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase())}</span>`}
 function icon(name){return ({grid:'▦',home:'⌂',tasks:'☷',people:'♧',plus:'＋',search:'⌕',more:'···'})[name]||name}
-async function refresh(){let previous=active;data=await api('data');if(active!==0&&active!=='mine'&&!data.projects.some(p=>p.id===active))active=data.projects[0]?.id??(data.tasks.some(t=>!t.has_projects&&!t.parent_id)?0:null);if(previous!==null&&previous!==active&&location.pathname.startsWith('/board/')){let task=data.tasks.find(t=>t.id===taskId);if(task&&isTaskPath(location.pathname))setTaskUrl(task,true);else setBoardUrl(active,true)}render()}
-async function start(){try{let s=await api('session');if(!s.user)return auth(s.needs_setup,s.allow_self_registration);if(s.blocked)return showBlocked();if(s.must_change_password)return showPasswordChange();await refresh();await openDeepLink()}catch(e){toast(e.message)}}
+async function refresh(){let request=++dataRequest,epoch=mutationEpoch,next=await api('data');if(request!==dataRequest||epoch!==mutationEpoch)return;let previous=active;data=next;if(active!==0&&active!=='mine'&&!data.projects.some(p=>p.id===active))active=data.projects[0]?.id??(data.tasks.some(t=>!t.has_projects&&!t.parent_id)?0:null);if(previous!==null&&previous!==active&&location.pathname.startsWith('/board/')){let task=data.tasks.find(t=>t.id===taskId);if(task&&isTaskPath(location.pathname))setTaskUrl(task,true);else setBoardUrl(active,true)}render()}
+let pollTimer=null,polling=false,pollDelay=5000;
+function schedulePoll(delay=5000){clearTimeout(pollTimer);if(data&&!document.hidden&&navigator.onLine!==false)pollTimer=setTimeout(poll,delay)}
+async function poll(){
+  if(polling||!data||document.hidden||navigator.onLine===false)return;
+  polling=true;
+  try{
+    let revision=await api('revision');if(revision.revision==null||data.revision==null)throw Error('Revisión no disponible');
+    if(revision.revision!==data.revision){
+      let request=++dataRequest,epoch=mutationEpoch,next=await api('data');
+      if(next.revision==null)throw Error('Revisión no disponible');
+      if(request!==dataRequest||epoch!==mutationEpoch||pendingMutations||document.hidden)return;
+      let task=next.tasks.find(t=>t.id===taskId),project=next.projects.find(p=>p.id===active);
+      if(taskDraft&&(!task||!task.can_edit||project?.role==='viewer')){clearTimeout(taskDraft.timer);taskDraft.denied=true;taskDraft.status.textContent='Sin permiso para guardar; conserva y copia tu borrador'}
+      // ponytail: postpone replacing interactive DOM until the user finishes; retry on the next poll.
+      if(dragged||listDrag||columnDrag||statusDrag!==null||dragSaving||columnSaving||projectFilterPanel||statusMenu||document.querySelector('dialog[open]')||document.activeElement?.matches('input,textarea,select,[contenteditable="true"]')&&$('#app')?.contains(document.activeElement))return;
+      if($('#modal .overlay')&&!$('#taskForm'))return;
+      if($('#task-panel-comentarios .comment-edit-form'))return;
+      if(taskDraft&&task&&((document.activeElement===taskDraft.title&&task.title_version!==taskDraft.titleVersion)||(document.activeElement===taskDraft.editor&&task.description_version!==taskDraft.descriptionVersion)))return;
+      let id=taskId,list=$('#activityList'),commentsPanel=$('#task-panel-comentarios');
+      if(id&&task&&list&&!commentsPanel?.querySelector('.comment-edit-form')){
+        let [history,comments]=await Promise.all([api('history/'+id),api('comments/'+id)]);
+        if(request!==dataRequest||epoch!==mutationEpoch||taskId!==id||!list.isConnected)return;
+        let commentsList=commentsPanel?.querySelector('.comment, .muted')?.parentElement;
+        if(commentsList&&!commentsList.contains(document.activeElement))commentsList.innerHTML=renderComments(comments,!!task.can_edit&&project?.role!=='viewer');
+        if(!list.contains(document.activeElement)){list.innerHTML=history.map(h=>`<div class="activity">${avatar(h.actor)}<div><strong>${esc(h.actor)}</strong> ${esc(h.message)}<small>${new Date(h.created_at).toLocaleString('es-CL',{dateStyle:'medium',timeStyle:'short'})}</small></div></div>`).join('');collapseActivity(list)}
+      }
+      if(request!==dataRequest||epoch!==mutationEpoch)return;
+      if(taskDraft&&task&&!taskDraft.denied&&!taskDraft.saving&&!taskDraft.conflict){
+        let draft=taskDraft;
+        if(draft.title.value.trim()===draft.savedTitle&&document.activeElement!==draft.title){draft.title.value=task.title;draft.savedTitle=task.title;draft.titleVersion=task.title_version}
+        if(draft.editor.innerHTML===draft.savedDescription&&document.activeElement!==draft.editor){let temp=document.createElement('div');if(task.description_format==='html')temp.innerHTML=task.description||'';else temp.textContent=task.description||'';draft.editor.innerHTML=temp.innerHTML;draft.savedDescription=temp.innerHTML;draft.descriptionVersion=task.description_version}
+      }
+      data=next;if(active!==0&&active!=='mine'&&!next.projects.some(p=>p.id===active))active=next.projects[0]?.id??0;render();
+    }
+    pollDelay=5000;
+  }catch(e){pollDelay=Math.min(pollDelay*2,60000)}finally{polling=false;schedulePoll(pollDelay)}
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(pollTimer);else schedulePoll(0)});
+window.addEventListener('online',()=>schedulePoll(0));
+window.addEventListener('offline',()=>clearTimeout(pollTimer));
+async function start(){try{let s=await api('session');if(!s.user)return auth(s.needs_setup,s.allow_self_registration);if(s.blocked)return showBlocked();if(s.must_change_password)return showPasswordChange();await refresh();await openDeepLink();schedulePoll()}catch(e){toast(e.message)}}
 function auth(setup,allowSignup=false,signup=false){
   let creating=setup||signup;
   $('#app').innerHTML=`<div class="auth"><div class="auth-art"><div class="brand light"><span class="brandmark">✳</span> flujo<span class="brand-dot">.</span></div><div><div class="art-label">UN LUGAR PARA AVANZAR</div><h1>El trabajo fluye<br>mejor en equipo<span>.</span></h1><p>Organiza las ideas, conecta a las personas y lleva cada proyecto hacia adelante.</p><div class="art-cards"><div>✳ <b>Grandes ideas</b><small>Todo empieza por aquí</small></div><div>✓ <b>Mejor trabajo</b><small>Un paso a la vez</small></div></div></div><small>Hecho para los equipos que hacen.</small></div><div class="auth-form"><div class="auth-box"><div class="eyebrow">TU ESPACIO DE TRABAJO</div><h2>${setup?'Comencemos':signup?'Crear cuenta':'Bienvenido de vuelta'}</h2><p>${setup?'Crea la primera cuenta administradora para empezar.':signup?'Crea tu cuenta para ingresar al workspace.':'Ingresa tus datos para continuar con tu trabajo.'}</p><form id="authForm">${creating?'<label>Nombre<input name="name" required autocomplete="name" placeholder="Tu nombre"></label>':''}<label>Usuario<input name="username" required autocomplete="username" placeholder="Tu usuario"></label><label>Contraseña<input name="password" type="password" required minlength="8" autocomplete="${creating?'new-password':'current-password'}" placeholder="Mínimo 8 caracteres"></label>${signup?'<label>Confirmar contraseña<input name="confirm_password" type="password" required minlength="8" autocomplete="new-password"></label>':''}<button class="primary wide">${setup?'Crear workspace':signup?'Crear cuenta':'Iniciar sesión'} <span>→</span></button></form>${allowSignup&&!setup?`<button type="button" class="text-button auth-switch" onclick="auth(false,true,${!signup})">${signup?'Ya tengo una cuenta':'Crear cuenta'}</button>`:''}</div></div></div>`;
@@ -668,7 +709,7 @@ function updateTaskPropertyVisuals(form,task){for(let field of ['assignee_id','d
 async function openTask(id,tab=null){if(taskDraft&&!await flushTaskDraft())return;if(taskDraft){clearTimeout(taskDraft.timer);taskDraft=null}if(tab)taskTab=tab;else if(taskId!==id)taskTab='detalle';taskId=id;let t=data.tasks.find(x=>x.id===id), history, comments;try{[history,comments]=await Promise.all([api('history/'+id),api('comments/'+id)])}catch(e){return toast(e.message)}let project=data.projects.find(p=>p.id===active),editable=t.can_edit&&(!project||project.role!=='viewer');let parent=data.tasks.find(x=>x.id===t.parent_id);let subs=data.tasks.filter(x=>x.parent_id===id);modal(`<div class="dialog-head"><div class="eyebrow">DETALLE DE LA TAREA &nbsp; / &nbsp; #${t.id}</div><div class="task-head-actions">${editable?`<button type="button" class="task-link-button task-remove-icon" data-tooltip="Eliminar tarea" aria-label="Eliminar tarea" onclick="confirmDeleteTask(${id})"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 4h4M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button>`:''}<button type="button" class="task-link-button" data-tooltip="Copiar link" aria-label="Copiar link" onclick="copyTaskLink(${t.id})"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1 0l2.1-2.1a5 5 0 0 0-7.1-7.1L11 5"/><path d="M14 11a5 5 0 0 0-7.1 0L4.8 13.1a5 5 0 0 0 7.1 7.1L13 19"/></svg></button><button type="button" aria-label="Cerrar" onclick="closeModal()">×</button></div></div>${parent?`<button type="button" class="parent-task-link" onclick="openTask(${parent.id},'detalle')">← Tarea principal: ${esc(parent.title)}</button>`:''}<form id="taskForm"><input class="task-title" name="title" value="${esc(t.title)}" ${editable?'':'disabled'} required>${renderTaskProperties(t,editable)}</form><div class="detail-section"><div class="project-section-head"><h3>Proyectos</h3>${editable?`<span class="quick-control project-add-control"><span aria-hidden="true">＋ Agregar a un proyecto <span class="quick-chevron">⌄</span></span><select class="project-select" aria-label="Agregar a un proyecto" onchange="if(this.value)taskProject(${id},+this.value,false)"><option value="">Agregar a un proyecto</option>${data.projects.filter(p=>p.role!=='viewer'&&!t.placements.some(x=>x.project_id===p.id)).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></span>`:''}</div><div class="chips">${t.placements.map(x=>{let p=data.projects.find(p=>p.id===x.project_id);return p?`<span class="chip"><i style="background:${esc(p.color)}"></i>${esc(p.name)} ${editable&&p.role!=='viewer'?`<button onclick="taskProject(${id},${p.id},true)" title="Quitar del proyecto">×</button>`:''}</span>`:''}).join('')+(t.inherited_project_ids||[]).map(projectId=>{let p=data.projects.find(p=>p.id===projectId);return p?`<span class="chip" title="Heredado de la tarea principal"><i style="background:${esc(p.color)}"></i>${esc(p.name)} · heredado</span>`:''}).join('')||'<span class="muted">Sin proyecto</span>'}</div></div>${editable?'<div id="taskSaveStatus" class="task-save-status" role="status" aria-live="polite"></div>':''}<div class="task-tabs" role="tablist" aria-label="Secciones de la tarea" onkeydown="taskTabKeydown(event)"><button type="button" role="tab" id="task-tab-detalle" aria-controls="task-panel-detalle" onclick="setTaskTab('detalle')">Detalle</button><button type="button" role="tab" id="task-tab-subtareas" aria-controls="task-panel-subtareas" onclick="setTaskTab('subtareas')">Subtareas (${subs.length})</button><button type="button" role="tab" id="task-tab-comentarios" aria-controls="task-panel-comentarios" onclick="setTaskTab('comentarios')">Comentarios (${comments.length})</button><button type="button" role="tab" id="task-tab-actividad" aria-controls="task-panel-actividad" onclick="setTaskTab('actividad')">Actividad</button></div><section id="task-panel-detalle" role="tabpanel" aria-labelledby="task-tab-detalle"><div class="description-field"><label id="descriptionLabel">Descripción</label>${editable?`<div class="editor-toolbar" role="toolbar" aria-label="Formato de descripción"><button type="button" title="Negrita" aria-label="Negrita" onmousedown="event.preventDefault()" onclick="formatDescription('bold')"><b>N</b></button><button type="button" title="Cursiva" aria-label="Cursiva" onmousedown="event.preventDefault()" onclick="formatDescription('italic')"><i>C</i></button><button type="button" title="Lista con viñetas" aria-label="Lista con viñetas" onmousedown="event.preventDefault()" onclick="formatDescription('insertUnorderedList')">☷</button><button type="button" title="Lista numerada" aria-label="Lista numerada" onmousedown="event.preventDefault()" onclick="formatDescription('insertOrderedList')">1.</button><button type="button" title="Insertar enlace" aria-label="Insertar enlace" onmousedown="event.preventDefault()" onclick="addDescriptionLink()">↗</button></div>`:''}<div id="descriptionEditor" class="description-editor ${editable?'':'read-only'}" role="textbox" aria-labelledby="descriptionLabel" aria-multiline="true" contenteditable="${editable}" data-placeholder="Agrega más detalles sobre esta tarea...">${t.description_format==='html'?t.description:esc(t.description).replace(/\n/g,'<br>')}</div></div></section><section id="task-panel-subtareas" role="tabpanel" aria-labelledby="task-tab-subtareas"><div class="detail-section"><h3>Subtareas</h3><div id="subtaskList">${renderSubtasks(subs)}</div>${editable?`<button type="button" id="addSubtask" class="text-button" onclick="newSubtask()">＋ Agregar subtarea</button><form id="subtaskForm" class="subtask-form" hidden><input name="title" aria-label="Nombre de la subtarea" placeholder="Nombre de la subtarea" required><button type="submit" class="primary">Crear</button></form>`:''}</div></section><section id="task-panel-comentarios" role="tabpanel" aria-labelledby="task-tab-comentarios"><div class="detail-section"><h3>Comentarios</h3><div id="commentsList">${renderComments(comments,editable)}</div>${editable?`<form id="commentForm"><label>Nuevo comentario<textarea name="body" rows="3" maxlength="10000" required placeholder="Escribe un comentario..."></textarea></label><button class="primary">Comentar</button></form>`:'<p class="muted">Tienes acceso de solo lectura.</p>'}</div></section><section id="task-panel-actividad" role="tabpanel" aria-labelledby="task-tab-actividad"><div class="detail-section"><h3>Actividad</h3><div id="activityList">${history.map(h=>`<div class="activity">${avatar(h.actor)}<div><strong>${esc(h.actor)}</strong> ${esc(h.message)}<small>${new Date(h.created_at).toLocaleString('es-CL',{dateStyle:'medium',timeStyle:'short'})}</small></div></div>`).join('')}</div></div></section>`,true);setTaskTab(taskTab);if(editable){setupSubtaskForm(id);$('#descriptionEditor').addEventListener('paste',pasteDescription);$('#commentForm').onsubmit=async e=>{e.preventDefault();let form=e.target;try{await api('comments',{task_id:id,body:form.elements.body.value});form.reset();let task=data.tasks.find(t=>t.id===id);if(task){task.comment_count=(task.comment_count||0)+1;$('#task-tab-comentarios').textContent=`Comentarios (${task.comment_count})`;renderBoard()}$('#commentsList').innerHTML=renderComments(await api('comments/'+id),editable);toast('Comentario agregado')}catch(err){toast(err.message)}};setupTaskAutosave(id,t)}}
 function setupTaskAutosave(id,task){
   let form=$('#taskForm'),title=form.elements.title,editor=$('#descriptionEditor'),status=$('#taskSaveStatus');
-  let draft=taskDraft={id,title,editor,status,savedTitle:task.title,savedDescription:editor.innerHTML,timer:null,saving:null};
+  let draft=taskDraft={id,title,editor,status,savedTitle:task.title,savedDescription:editor.innerHTML,titleVersion:task.title_version,descriptionVersion:task.description_version,timer:null,saving:null,conflict:false,denied:false};
   function schedule(delay){clearTimeout(draft.timer);status.textContent='Cambios sin guardar';draft.timer=setTimeout(()=>flushTaskDraft(),delay)}
   title.addEventListener('input',()=>schedule(1000));
   title.addEventListener('blur',()=>flushTaskDraft());
@@ -678,6 +719,7 @@ function setupTaskAutosave(id,task){
 async function flushTaskDraft(){
   let draft=taskDraft;if(!draft)return true;
   clearTimeout(draft.timer);
+  if(draft.conflict||draft.denied)return false;
   if(draft.saving){let ok=await draft.saving;return ok&&taskDraft===draft?flushTaskDraft():ok}
   let work=(async()=>{
     while(taskDraft===draft){
@@ -688,8 +730,14 @@ async function flushTaskDraft(){
         if(!title){draft.status.textContent='El nombre de la tarea es obligatorio';return false}
         return true;
       }
+      if('title' in payload){if(draft.titleVersion==null){draft.status.textContent='El servidor no admite versiones; conserva tu borrador';return false}payload.title_version=draft.titleVersion}
+      if('description' in payload){if(draft.descriptionVersion==null){draft.status.textContent='El servidor no admite versiones; conserva tu borrador';return false}payload.description_version=draft.descriptionVersion}
       draft.status.textContent='Guardando…';
-      try{await api('task/update',payload)}catch(err){if(taskDraft===draft){draft.status.textContent='No se pudieron guardar los cambios';toast(err.message)}return false}
+      let result;
+      try{result=await api('task/update',payload)}catch(err){if(taskDraft===draft){if(err.conflict){draft.conflict=true;showTaskConflict(draft)}else{if(err.status===401||err.status===403)draft.denied=true;draft.status.textContent=draft.denied?'Sin acceso; conserva y copia tu borrador':'No se pudieron guardar los cambios';toast(err.message)}}return false}
+      if(('title' in payload&&result.title_version==null)||('description' in payload&&result.description_version==null)){draft.denied=true;draft.status.textContent='El servidor no devolvió versiones; conserva tu borrador';return false}
+      if('title' in payload)draft.titleVersion=result.title_version;
+      if('description' in payload)draft.descriptionVersion=result.description_version;
       if('title' in payload)draft.savedTitle=title;
       if('description' in payload)draft.savedDescription=description;
       try{await refresh()}catch{}
@@ -701,6 +749,28 @@ async function flushTaskDraft(){
   })();
   draft.saving=work;
   try{return await work}finally{if(draft.saving===work)draft.saving=null}
+}
+function showTaskConflict(draft){
+  draft.status.textContent='Esta tarea cambió en el servidor. Elige cómo resolver el conflicto. ';
+  for(let choice of ['Recargar','Sobrescribir']){
+    let button=document.createElement('button');button.type='button';button.textContent=choice;draft.status.appendChild(button);
+    button.onclick=async()=>{
+      button.disabled=true;
+      try{
+        let snapshot=await api('data'),task=snapshot.tasks.find(t=>t.id===draft.id),project=snapshot.projects.find(p=>p.id===active);
+        if(taskDraft!==draft)return;
+        if(!task||!task.can_edit||project?.role==='viewer'||task.title_version==null||task.description_version==null)throw Error('Tarea sin acceso o versiones no disponibles');
+        let titleDirty=draft.title.value.trim()!==draft.savedTitle,descriptionDirty=draft.editor.innerHTML!==draft.savedDescription;
+        draft.titleVersion=task.title_version;draft.descriptionVersion=task.description_version;
+        let temp=document.createElement('div');if(task.description_format==='html')temp.innerHTML=task.description||'';else temp.textContent=task.description||'';
+        draft.savedTitle=task.title;draft.savedDescription=temp.innerHTML;
+        if(choice==='Recargar'||!titleDirty)draft.title.value=task.title;
+        if(choice==='Recargar'||!descriptionDirty)draft.editor.innerHTML=temp.innerHTML;
+        draft.conflict=false;draft.status.textContent=choice==='Recargar'?'Actualizado':'Cambios sin guardar';
+        if(choice==='Sobrescribir')await flushTaskDraft();
+      }catch(err){button.disabled=false;toast(err.message)}
+    };
+  }
 }
 function confirmDeleteTask(id){
   let task=data.tasks.find(t=>t.id===id);if(!task?.can_edit)return;
