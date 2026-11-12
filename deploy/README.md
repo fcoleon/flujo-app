@@ -83,7 +83,7 @@ Abre `http://localhost:18080` en tu computador con el túnel activo.
 
 ### Migración manual de IDs AUTOINCREMENT
 
-Para esta actualización, después de `git pull --rebase` y antes del despliegue normal, detén Flujo y respalda la base. La pausa evita que los procesos anteriores escriban mientras se reconstruyen las tablas y hasta que se inicie el código nuevo. Ejecuta la migración como el usuario de la aplicación, con permisos de escritura en la base y su directorio:
+Para actualizar una instalación anterior que aún no tenga esta migración, después de `git pull --rebase` y antes del despliegue normal, detén Flujo y respalda la base. Las instalaciones nuevas ya usan `AUTOINCREMENT`; no es necesario repetir este procedimiento en cada despliegue. La pausa evita que los procesos anteriores escriban mientras se reconstruyen las tablas y hasta que se inicie el código nuevo. Ejecuta la migración como el usuario de la aplicación, con permisos de escritura en la base y su directorio:
 
 ```sh
 sudo supervisorctl stop flujo-app

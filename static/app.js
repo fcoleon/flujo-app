@@ -750,25 +750,37 @@ async function reloadAutomations(){let project=automationProject,dialog=$('#moda
 async function moveAutomation(i,delta){let order=automationRules.map(r=>r.id),j=i+delta;if(j<0||j>=order.length)return;[order[i],order[j]]=[order[j],order[i]];try{await api('automations/reorder',{project_id:automationProject.id,order});await reloadAutomations()}catch(e){toast(e.message)}}
 async function toggleAutomation(i){let r=automationRules[i];try{await api('automations/save',{id:r.id,project_id:automationProject.id,name:r.name,enabled:!r.enabled,trigger:r.trigger,conditions:r.conditions,actions:r.actions,position:r.position??i});await reloadAutomations()}catch(e){toast(e.message)}}
 async function deleteAutomation(i){let r=automationRules[i];if(!confirm(`¿Eliminar la automatización «${r.name}»?`))return;try{await api('automations/delete',{project_id:automationProject.id,id:r.id});await reloadAutomations()}catch(e){toast(e.message)}}
-let mineBoard='all',mineSearch='',mineIncludeDone=false;
+let mineBoard='all',mineSearch='',mineIncludeDone=false,mineGroup='none';
 function myTasks(){
   let priority={Alta:0,Normal:1,Baja:2};
   return data.tasks.filter(t=>t.assignee_id===data.user.id&&(mineIncludeDone||!taskStatus(t)?.is_done)&&matchesSearch(t,mineSearch)&&
     (mineBoard==='all'||(mineBoard==='none'?!t.has_projects:taskContextProjects(t).includes(Number(mineBoard)))))
     .sort((a,b)=>Number(!a.due_date)-Number(!b.due_date)||(a.due_date||'').localeCompare(b.due_date||'')||((priority[a.priority]??3)-(priority[b.priority]??3))||b.id-a.id);
 }
+function myTasksToday(now=new Date()){
+  let parts=new Intl.DateTimeFormat('en-US',{timeZone:data.stats_timezone||'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now);
+  return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('-');
+}
+function groupMyTasks(tasks,today){
+  let end=new Date(today+'T00:00:00Z');end.setUTCDate(end.getUTCDate()+6);let limit=end.toISOString().slice(0,10);
+  let groups=[{name:'Vencidas',tasks:[]},{name:'Próximos 7 días',tasks:[]},{name:'Más adelante',tasks:[]},{name:'Sin fecha',tasks:[]},{name:'Finalizadas',tasks:[]}];
+  for(let task of tasks){let index=taskStatus(task)?.is_done?4:!task.due_date?3:task.due_date<today?0:task.due_date<=limit?1:2;groups[index].tasks.push(task)}
+  return groups.filter(group=>group.tasks.length);
+}
 function renderMyTaskResults(){
   let container=$('#myTaskResults');if(!container)return;let tasks=myTasks();
-  container.innerHTML=tasks.length?`<div class="my-tasks-table-wrap"><table class="my-tasks-table"><thead><tr><th scope="col">Tarea</th><th scope="col">Tablero</th><th scope="col">Estado</th><th scope="col">Fecha límite</th><th scope="col">Prioridad</th></tr></thead><tbody>${tasks.map(t=>{
+  let groups=mineGroup==='due'?groupMyTasks(tasks,myTasksToday()):[{name:'',tasks}];
+  container.innerHTML=tasks.length?`<div class="my-tasks-table-wrap"><table class="my-tasks-table"><thead><tr><th scope="col">Tarea</th><th scope="col">Tablero</th><th scope="col">Estado</th><th scope="col">Fecha límite</th><th scope="col">Prioridad</th></tr></thead>${groups.map(group=>`<tbody>${group.name?`<tr class="my-tasks-group"><th scope="rowgroup" colspan="5">${esc(group.name)} <span class="count">${group.tasks.length}</span></th></tr>`:''}${group.tasks.map(t=>{
     let controls=taskQuickControls(t,t.can_edit),projects=taskContextProjects(t).map(id=>data.projects.find(p=>p.id===id)).filter(Boolean);
     return `<tr><td><button type="button" class="task-list-title" onclick="openTask(${t.id})">${esc(t.title)}</button>${t.parent_id?'<small>Subtarea</small>':''}</td><td>${projects.length?projects.map(p=>`<button type="button" class="my-tasks-project" onclick="selectProject(${p.id})">${esc(p.name)}</button>`).join(' '):'<span class="muted">Sin proyecto</span>'}</td><td>${controls.statusControl}</td><td>${controls.dateControl}</td><td>${controls.priorityControl}</td></tr>`;
-  }).join('')}</tbody></table></div>`:'<div class="empty-state">No hay tareas que coincidan con los filtros.</div>';
+  }).join('')}</tbody>`).join('')}</table></div>`:'<div class="empty-state">No hay tareas que coincidan con los filtros.</div>';
   let count=$('#myTaskCount');if(count)count.textContent=`${tasks.length} ${tasks.length===1?'tarea':'tareas'}`;
 }
 function renderMyTasks(){
   if(mineBoard!=='all'&&mineBoard!=='none'&&!data.projects.some(p=>String(p.id)===mineBoard))mineBoard='all';
   let main=$('#app main');if(!main)return;main.classList.add('board-main');
   main.innerHTML=`<header class="topbar"><div class="breadcrumb">${esc(data.workspace_name)} <span>/</span> <strong>Mis tareas</strong></div></header><section class="content stats-layout my-tasks"><div class="project-heading"><div class="project-heading-main"><div class="project-title-row"><h1>Mis tareas</h1></div><p>Las tareas asignadas a ti, en todos tus tableros.</p></div></div><div class="my-tasks-filters"><label>Buscar<input type="search" id="myTaskSearch" placeholder="Nombre o descripción" value="${esc(mineSearch)}" oninput="mineSearch=this.value;renderMyTaskResults()"></label><label>Tablero<select aria-label="Filtrar por tablero" onchange="mineBoard=this.value;renderMyTaskResults()"><option value="all" ${mineBoard==='all'?'selected':''}>Todos los tableros</option><option value="none" ${mineBoard==='none'?'selected':''}>Sin proyecto</option>${data.projects.map(p=>`<option value="${p.id}" ${mineBoard===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label class="my-tasks-check"><input type="checkbox" ${mineIncludeDone?'checked':''} onchange="mineIncludeDone=this.checked;renderMyTaskResults()"> Incluir finalizadas</label><span id="myTaskCount" class="muted" aria-live="polite"></span></div><div id="board" tabindex="0" role="region" aria-label="Lista de mis tareas"><div id="myTaskResults"></div></div></section>`;
+  let group=document.createElement('label');group.textContent='Agrupar por';let select=document.createElement('select');select.setAttribute('aria-label','Agrupar tareas');select.innerHTML='<option value="none">Sin agrupar</option><option value="due">Vencimiento</option>';select.value=mineGroup;select.onchange=()=>{mineGroup=select.value;renderMyTaskResults()};group.appendChild(select);main.querySelector('.my-tasks-filters').insertBefore(group,main.querySelector('.my-tasks-check'));
   renderMyTaskResults();
 }
 function projectMemberStack(project){

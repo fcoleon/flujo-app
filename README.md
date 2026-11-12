@@ -8,9 +8,8 @@ Se requiere Python 3.9 o superior y una base de datos de zonas horarias del sist
 
 ```sh
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python app.py
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python app.py
 ```
 
 Abre [http://localhost:8000](http://localhost:8000) y crea la primera cuenta, que será administradora del workspace. El servidor escucha solo en `127.0.0.1` y guarda los datos en `tasks.db`. La base de datos y el entorno virtual no se incluyen en Git.
@@ -23,13 +22,14 @@ En ejecución local, las siguientes variables opcionales tienen prioridad sobre 
 | --- | --- | --- |
 | `PORT` | `8000` | Puerto del servidor local. |
 | `TASKS_DB` | `tasks.db` | Ruta del archivo SQLite. |
-| `TASKS_TIMEZONE` | `America/Santiago` | Zona horaria IANA usada para agrupar estadísticas mensuales. |
+| `TASKS_TIMEZONE` | `America/Santiago` | Zona horaria IANA usada para estadísticas y agrupación por vencimiento en «Mis tareas». |
 | `APP_CONFIG` | `config.ini` en la raíz | Archivo de configuración alternativo. |
 
-Por ejemplo, para ejecutar una instancia con otra base y puerto:
+Por ejemplo, para una prueba manual con una base temporal y otro puerto:
 
 ```sh
-PORT=8001 TASKS_DB=pruebas.db python app.py
+tmp_dir=$(mktemp -d)
+env -u FLUJO_CONFIG_ONLY PORT=8001 TASKS_DB="$tmp_dir/tasks.db" .venv/bin/python app.py
 ```
 
 El despliegue con Supervisor usa exclusivamente el `config.ini` de la aplicación para evitar que variables heredadas cambien su configuración.
@@ -37,18 +37,40 @@ El despliegue con Supervisor usa exclusivamente el `config.ini` de la aplicació
 Para ejecutar las pruebas automatizadas:
 
 ```sh
-python -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 Las peticiones POST a la API usan `Content-Type: application/json` y un objeto JSON como cuerpo; para operaciones sin campos se envía `{}`. Un tipo de contenido incorrecto devuelve `415` y JSON inválido o una raíz que no sea un objeto devuelve `400`, con un mensaje en `error`. Al agregar o modificar operaciones, valida los tipos y valores de sus campos antes de usarlos y conserva el mismo formato de error; los campos desconocidos se ignoran.
 
 ## Funcionalidades
 
-- Proyectos con tableros Kanban, columnas configurables y tareas que pueden pertenecer a varios proyectos, con posición independiente en cada uno.
+- Proyectos con vistas de **Tablero** y **Lista**; columnas con nombre y color configurables y tareas que pueden pertenecer a varios proyectos, con posición independiente en cada uno. En Lista se pueden reordenar y mover tareas y contraer secciones.
 - Responsables, fechas, prioridad, descripción enriquecida, subtareas, comentarios, historial y enlaces directos a tareas. Los enlaces respetan los permisos existentes.
-- Búsqueda por nombre y descripción en el tablero actual, sin distinguir mayúsculas ni acentos.
+- **Mis tareas** reúne las tareas asignadas a la persona, incluidas subtareas accesibles y tareas sin proyecto. Oculta las finalizadas por defecto y permite incluirlas, buscar, filtrar por proyecto y agrupar opcionalmente por vencimiento. Una tarea compartida aparece una sola vez.
+- Búsqueda por nombre y descripción en el tablero actual o en Mis tareas, sin distinguir mayúsculas ni acentos.
 - Tipos de tarea configurables por proyecto, con estados en curso o finalizados. El tipo y el estado son compartidos entre los proyectos de una tarea e independientes de las columnas. Al cambiar el tipo, el estado vuelve al primer estado en curso del nuevo tipo.
 - Estadísticas mensuales para administradores del proyecto, con filtros por tipo y desglose por persona.
+- Automatizaciones por proyecto con gatillantes, condiciones y acciones sobre tareas, además de historial de ejecuciones.
+
+Los enlaces de proyecto usan `/board/<uuid>` y los de tarea `/board/<uuid>/task/<uuid>`; las tareas sin proyecto usan `/board/no-project/task/<uuid>`. Mis tareas está en `/my-tasks`. Los enlaces de tarea anteriores siguen funcionando y ningún enlace concede permisos adicionales.
+
+### Mis tareas
+
+Por defecto las tareas en curso se muestran juntas y se ordenan por fecha límite, con las que no tienen fecha al final. «Agrupar por vencimiento» permite separarlas en **Vencidas**, **Próximos 7 días** —incluido hoy—, **Más adelante** y **Sin fecha**. Si se incluyen finalizadas, estas aparecen en un grupo separado. Las fechas se comparan usando la zona horaria configurada para la aplicación.
+
+### Automatizaciones
+
+Los administradores de proyecto pueden crear, ordenar, pausar y editar reglas; los editores pueden consultarlas. El botón **Automatizaciones** incluye una referencia de las opciones disponibles y las últimas ejecuciones.
+
+Una regla puede reaccionar a la creación de una tarea o a cambios de columna, estado, responsable, prioridad o fecha. Puede comprobar condiciones y mover la tarea, cambiar su estado, responsable, prioridad o fecha. Una acción puede activar otra regla; cada regla se ejecuta como máximo una vez por tarea en una cadena, limitada a 100 eventos y 100 reglas.
+
+Las reglas solo se evalúan si la tarea pertenece al proyecto de la regla y su tipo también pertenece a ese proyecto. Los cambios de campos compartidos pueden activar las reglas del proyecto dueño del tipo desde otro tablero; los movimientos de columna se evalúan solo en el tablero donde ocurren. Las tareas sin proyecto no activan reglas.
+
+Si se elimina una referencia necesaria o una ejecución falla, la regla afectada se desactiva y se muestra su motivo. Una regla fallida revierte sus propias acciones; el cambio que inició la cadena se conserva. Las fechas relativas de las acciones se calculan con la fecha UTC.
+
+### Eliminar columnas
+
+Un administrador del proyecto puede borrar una columna desde **Editar columna**. Siempre se solicita confirmación; si contiene tareas, debe elegir moverlas a otra columna, quitarlas del proyecto o eliminarlas definitivamente. Quitar una tarea del proyecto conserva sus otros proyectos y la pertenencia que pueda heredar de una tarea principal. Al eliminar tareas se advierte que se borran de todos sus proyectos.
 
 ## Usuarios y permisos
 

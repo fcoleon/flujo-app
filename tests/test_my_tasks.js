@@ -21,4 +21,12 @@ eval(source.slice(source.indexOf('function taskContextProjects('),source.indexOf
   mineBoard='none';assert(myTasks().map(t=>t.id).join(',')==='3','filtra tareas sin proyecto');
   mineBoard='all';mineIncludeDone=true;assert(myTasks().map(t=>t.id).join(',')==='2,4,1,3','incluye finalizadas');
   mineSearch='subtarea';renderMyTaskResults();assert(count.textContent==='1 tarea'&&results.innerHTML.includes('LECTURA')&&!results.innerHTML.includes('EDITAR'),'búsqueda y permisos');
+  let groups=groupMyTasks([
+    {id:1,due_date:'2024-02-27'},{id:2,due_date:'2024-02-28'},{id:3,due_date:'2024-03-05'},
+    {id:4,due_date:'2024-03-06'},{id:5,due_date:null},{id:6,due_date:'2024-02-01',done:true}
+  ],'2024-02-28');
+  assert(groups.map(g=>g.name).join('|')==='Vencidas|Próximos 7 días|Más adelante|Sin fecha|Finalizadas','grupos y finalizadas');
+  assert(groups.map(g=>g.tasks.map(t=>t.id).join(',')).join('|')==='1|2,3|4|5|6','límites de fechas en año bisiesto');
+  data.stats_timezone='America/Santiago';assert(myTasksToday(new Date('2026-01-01T02:00:00Z'))==='2025-12-31','usa zona horaria configurada');
+  mineSearch='';mineGroup='due';renderMyTaskResults();assert(results.innerHTML.includes('my-tasks-group')&&results.innerHTML.includes('Finalizadas'),'muestra grupos');
 `);
