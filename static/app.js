@@ -375,6 +375,36 @@ function openStatusMenu(e,id,detail,field='status'){
   document.addEventListener('pointerdown',statusMenuOutside,true);document.addEventListener('scroll',statusMenuScroll,true);window.addEventListener('resize',statusMenuResize);
   (menu.querySelector('[aria-checked="true"]')||menu.querySelector('.status-option')).focus();
 }
+function openSelectMenu(select){
+  if(statusMenuTrigger===select){closeStatusMenu(true);return}
+  closeStatusMenu();if(select.matches(':disabled'))return;
+  let options=[...select.options].filter(option=>!option.hidden),anchor=select.closest('.quick-control')||select,rect=anchor.getBoundingClientRect();
+  if(!options.length)return;
+  let menu=document.createElement('div');menu.className='status-menu select-menu';menu.setAttribute('role','menu');menu.setAttribute('aria-label',select.getAttribute('aria-label')||select.labels?.[0]?.firstChild?.textContent?.trim()||'Seleccionar opción');
+  menu.style.minWidth=Math.min(Math.max(160,rect.width),Math.max(0,Math.min(320,window.innerWidth-16)))+'px';
+  menu.innerHTML=options.map((option,index)=>`<button type="button" role="menuitemradio" aria-checked="${option.selected}" class="status-option ${option.selected?'selected':''}" data-index="${index}" ${option.disabled||option.parentElement?.disabled?'disabled':''}><span class="status-option-text">${esc(option.textContent)}</span>${option.selected?'<span class="status-option-check" aria-hidden="true">✓</span>':''}</button>`).join('');
+  (select.closest('dialog[open]')||document.body).appendChild(menu);statusMenu=menu;statusMenuTrigger=select;select.setAttribute('aria-expanded','true');
+  let width=menu.offsetWidth,height=menu.offsetHeight;menu.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-width-8))+'px';menu.style.top=Math.max(8,Math.min(rect.bottom+6+height<=window.innerHeight-8?rect.bottom+6:rect.top-height-6,window.innerHeight-height-8))+'px';
+  menu.addEventListener('click',event=>{
+    let button=event.target.closest('.status-option');if(!button||button.disabled)return;event.stopPropagation();let option=options[Number(button.dataset.index)],changed=!option.selected;
+    closeStatusMenu(true);if(changed){select.value=option.value;select.dispatchEvent(new Event('input',{bubbles:true}));select.dispatchEvent(new Event('change',{bubbles:true}))}
+  });
+  let typed='',typeTimer;
+  menu.addEventListener('keydown',event=>{
+    let buttons=[...menu.querySelectorAll('.status-option:not(:disabled)')],index=buttons.indexOf(document.activeElement);
+    if(event.key==='Escape'){event.preventDefault();closeStatusMenu(true);return}if(event.key==='Tab'){closeStatusMenu(true);return}
+    if(!buttons.length)return;
+    if(event.key==='ArrowDown')index=(index+1)%buttons.length;else if(event.key==='ArrowUp')index=(index-1+buttons.length)%buttons.length;else if(event.key==='Home')index=0;else if(event.key==='End')index=buttons.length-1;
+    else if(event.key.length===1&&event.key!==' '&&!event.ctrlKey&&!event.metaKey&&!event.altKey){typed+=normalizeSearch(event.key);clearTimeout(typeTimer);typeTimer=setTimeout(()=>{typed=''},700);let found=buttons.findIndex(button=>normalizeSearch(button.textContent).startsWith(typed));if(found<0)return;index=found}else return;
+    event.preventDefault();buttons[index].focus();
+  });
+  document.addEventListener('pointerdown',statusMenuOutside,true);document.addEventListener('scroll',statusMenuScroll,true);window.addEventListener('resize',statusMenuResize);
+  (menu.querySelector('[aria-checked="true"]:not(:disabled)')||menu.querySelector('.status-option:not(:disabled)'))?.focus();
+}
+function dropdownSelect(target){let select=target.closest?.('select');return select&&!select.multiple&&select.size<=1&&!select.matches(':disabled')?select:null}
+document.addEventListener('pointerdown',e=>{let select=dropdownSelect(e.target);if(!select||e.button!==0)return;e.preventDefault();e.stopPropagation();openSelectMenu(select)},true);
+document.addEventListener('click',e=>{let select=dropdownSelect(e.target);if(!select)return;e.preventDefault();e.stopPropagation();if(e.detail===0)openSelectMenu(select)},true);
+document.addEventListener('keydown',e=>{let select=dropdownSelect(e.target);if(!select||!['Enter',' ','ArrowDown','ArrowUp'].includes(e.key)||e.altKey||e.ctrlKey||e.metaKey)return;e.preventDefault();e.stopPropagation();openSelectMenu(select)},true);
 function taskQuickControls(t,editable){
   let priorityControl=priorityButton(t,editable);
   let st=taskStatus(t), statusControl=st?statusButton(t,editable):'';
