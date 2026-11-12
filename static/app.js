@@ -185,6 +185,91 @@ function restoreBoardScroll(board){
   let state=boardScrollPositions.get(board.dataset.project);if(!state)return;board.scrollLeft=state.left;
   board.querySelectorAll('.column[data-column] .cards').forEach(cards=>{cards.scrollTop=state.columns.get(cards.closest('.column').dataset.column)||0});
 }
+const projectFilterCache=new Map();
+function projectFilterDefaults(){return {completion:'all',period:'all',assignee:'',type:'',due:'',date:'',priority:'',status:''}}
+function projectFilterKey(project){return `flujo:project-filters:${data.user.id}:${project.public_id||project.id}`}
+function projectFilters(project){
+  let key=projectFilterKey(project);if(projectFilterCache.has(key))return projectFilterCache.get(key);
+  let saved={};try{saved=JSON.parse(sessionStorage.getItem(key)||'{}')}catch{}
+  let result=projectFilterDefaults();if(saved&&typeof saved==='object')for(let field of Object.keys(result))if(typeof saved[field]==='string')result[field]=saved[field];
+  if(!['all','open','done'].includes(result.completion))result.completion='all';
+  if(!['all','today','yesterday','week','month'].includes(result.period))result.period='all';
+  if(!['','none','overdue','today','week','month','date'].includes(result.due))result.due='';
+  if(!['','Baja','Normal','Alta'].includes(result.priority))result.priority='';
+  if(!/^(|none|[1-9]\d*)$/.test(result.assignee))result.assignee='';
+  for(let field of ['type','status'])if(!/^(|[1-9]\d*)$/.test(result[field]))result[field]='';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(result.date))result.date='';
+  projectFilterCache.set(key,result);return result;
+}
+function saveProjectFilters(project,filters){try{sessionStorage.setItem(projectFilterKey(project),JSON.stringify(filters))}catch{}}
+function projectFilterCount(filters){return ['assignee','type','due','priority','status'].filter(field=>filters[field]).length+(filters.completion!=='all'?1:0)}
+let projectDateFormatter=null,projectDateTimezone='';
+function projectFilterDate(value){
+  let date=new Date(value);if(Number.isNaN(date.getTime()))return '';
+  let timezone=data.stats_timezone||'America/Santiago';if(timezone!==projectDateTimezone){projectDateTimezone=timezone;projectDateFormatter=new Intl.DateTimeFormat('en-US',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'})}
+  let parts=projectDateFormatter.formatToParts(date);
+  return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('-');
+}
+function projectFilterDates(today){
+  let day=new Date(today+'T00:00:00Z'),offset=(day.getUTCDay()+6)%7;
+  function shift(days){let date=new Date(day);date.setUTCDate(date.getUTCDate()+days);return date.toISOString().slice(0,10)}
+  return {today,yesterday:shift(-1),weekStart:shift(-offset),weekEnd:shift(6-offset),month:today.slice(0,7)};
+}
+function matchesProjectFilters(task,filters,dates){
+  let done=!!taskStatus(task)?.is_done;
+  if(filters.completion==='open'&&done||filters.completion==='done'&&!done)return false;
+  if(filters.completion==='done'&&filters.period!=='all'){
+    let completed=task.completed_at?projectFilterDate(task.completed_at):'';if(!completed)return false;
+    if(filters.period==='today'&&completed!==dates.today||filters.period==='yesterday'&&completed!==dates.yesterday||filters.period==='week'&&(completed<dates.weekStart||completed>dates.weekEnd)||filters.period==='month'&&!completed.startsWith(dates.month+'-'))return false;
+  }
+  if(filters.assignee&&(filters.assignee==='none'?task.assignee_id!=null:String(task.assignee_id)!==filters.assignee))return false;
+  if(filters.type&&String(task.type_id)!==filters.type||filters.status&&String(task.status_id)!==filters.status||filters.priority&&task.priority!==filters.priority)return false;
+  let due=task.due_date||'';
+  if(filters.due==='none'&&due||filters.due==='overdue'&&(!due||due>=dates.today)||filters.due==='today'&&due!==dates.today||filters.due==='week'&&(!due||due<dates.weekStart||due>dates.weekEnd)||filters.due==='month'&&(!due||!due.startsWith(dates.month+'-'))||filters.due==='date'&&(!filters.date||due!==filters.date))return false;
+  return true;
+}
+let projectFilterPanel=null,projectFilterTrigger=null;
+function closeProjectFilters(restoreFocus=false){
+  if(!projectFilterPanel)return;
+  if(statusMenu&&projectFilterPanel.contains(statusMenuTrigger))closeStatusMenu();
+  let trigger=projectFilterTrigger;projectFilterPanel.remove();projectFilterPanel=null;projectFilterTrigger=null;trigger?.setAttribute('aria-expanded','false');
+  document.removeEventListener('pointerdown',projectFilterOutside,true);document.removeEventListener('keydown',projectFilterKeydown,true);window.removeEventListener('resize',projectFilterResize);
+  if(restoreFocus&&trigger?.isConnected)trigger.focus();
+}
+function projectFilterOutside(e){if(projectFilterPanel&&!projectFilterPanel.contains(e.target)&&!projectFilterTrigger?.contains(e.target)&&!(statusMenu?.contains(e.target)&&projectFilterPanel.contains(statusMenuTrigger)))closeProjectFilters()}
+function projectFilterKeydown(e){if(e.key==='Escape'&&projectFilterPanel&&!(statusMenu?.contains(e.target))){e.preventDefault();closeProjectFilters(true)}}
+function projectFilterResize(){closeProjectFilters()}
+function projectFilterOptions(items,value){
+  return items.map(([id,name])=>`<option value="${esc(id)}" ${id===value?'selected':''}>${esc(name)}</option>`).join('')+(value&&!items.some(([id])=>id===value)?`<option value="${esc(value)}" selected>No disponible</option>`:'');
+}
+function updateProjectFilterButton(project){let button=$('.project-filter-trigger');if(!button||active!==project.id)return;let count=projectFilterCount(projectFilters(project));button.textContent='⚑ Filtros'+(count?' · '+count:'');button.classList.toggle('active',!!count)}
+function openProjectFilters(button){
+  let project=data.projects.find(p=>p.id===active);if(!project)return;
+  if(projectFilterTrigger===button){closeProjectFilters(true);return}closeProjectFilters();closeStatusMenu();
+  let filters=projectFilters(project),types=[...project.types];
+  for(let task of data.tasks)if(task.placements.some(place=>place.project_id===project.id)&&task.task_type&&!types.some(type=>type.id===task.task_type.id))types.push(task.task_type);
+  let assignees=[['','Todos'],['none','Sin responsable'],...data.users.map(user=>[String(user.id),user.name])],typeOptions=[['','Todos'],...types.map(type=>[String(type.id),type.name])];
+  let statuses=[['','Todos'],...types.flatMap(type=>type.statuses.map(status=>[String(status.id),type.name+' · '+status.name]))];
+  let panel=document.createElement('div');panel.className='project-filter-panel';panel.setAttribute('role','dialog');panel.setAttribute('aria-label','Filtros del proyecto');
+  panel.innerHTML=`<div class="project-filter-head"><strong>Filtros</strong><button type="button" class="text-button" data-clear>Eliminar todos</button></div><div class="project-filter-quick"><button type="button" data-quick="open">Sin finalizar</button><button type="button" data-quick="mine">Asignadas a mí</button><button type="button" data-quick="done">Finalizadas</button></div><label data-period>Finalizadas<select data-field="period">${projectFilterOptions([['all','Todas'],['today','Hoy'],['yesterday','Ayer'],['week','Esta semana'],['month','Este mes']],filters.period)}</select><small>Las tareas antiguas sin fecha de finalización solo aparecen en «Todas».</small></label><div class="project-filter-fields"><label>Responsable<select data-field="assignee">${projectFilterOptions(assignees,filters.assignee)}</select></label><label>Tipo de tarea<select data-field="type">${projectFilterOptions(typeOptions,filters.type)}</select></label><label>Fecha límite<select data-field="due">${projectFilterOptions([['','Cualquiera'],['none','Sin fecha'],['overdue','Vencida'],['today','Hoy'],['week','Esta semana'],['month','Este mes'],['date','Fecha específica']],filters.due)}</select></label><label data-date>Fecha específica<input type="date" data-field="date" value="${esc(filters.date)}"></label><label>Prioridad<select data-field="priority">${projectFilterOptions([['','Todas'],['Baja','Baja'],['Normal','Normal'],['Alta','Alta']],filters.priority)}</select></label><label>Estado<select data-field="status">${projectFilterOptions(statuses,filters.status)}</select></label></div>`;
+  document.body.appendChild(panel);projectFilterPanel=panel;projectFilterTrigger=button;button.setAttribute('aria-expanded','true');
+  function sync(){
+    panel.querySelectorAll('[data-field]').forEach(control=>{control.value=filters[control.dataset.field]});
+    panel.querySelector('[data-period]').hidden=filters.completion!=='done';panel.querySelector('[data-date]').hidden=filters.due!=='date';
+    panel.querySelectorAll('[data-quick]').forEach(control=>{let kind=control.dataset.quick,on=kind==='mine'?filters.assignee===String(data.user.id):filters.completion===kind;control.setAttribute('aria-pressed',String(on));control.classList.toggle('active',on)});
+    updateProjectFilterButton(project);
+    let rect=button.getBoundingClientRect(),height=panel.offsetHeight,width=panel.offsetWidth;panel.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-width-8))+'px';panel.style.top=Math.max(8,Math.min(rect.bottom+6+height<=window.innerHeight-8?rect.bottom+6:rect.top-height-6,window.innerHeight-height-8))+'px';
+  }
+  function apply(){saveProjectFilters(project,filters);sync();renderBoard()}
+  panel.addEventListener('change',e=>{let field=e.target.dataset.field;if(!field)return;filters[field]=e.target.value;apply()});
+  panel.addEventListener('click',e=>{
+    let quick=e.target.closest('[data-quick]');
+    if(quick){let kind=quick.dataset.quick;if(kind==='mine')filters.assignee=filters.assignee===String(data.user.id)?'':String(data.user.id);else filters.completion=filters.completion===kind?'all':kind;apply()}
+    else if(e.target.closest('[data-clear]')){Object.assign(filters,projectFilterDefaults());apply()}
+  });
+  sync();
+  document.addEventListener('pointerdown',projectFilterOutside,true);document.addEventListener('keydown',projectFilterKeydown,true);window.addEventListener('resize',projectFilterResize);panel.querySelector('[data-quick]')?.focus();
+}
 const listCollapsedState=new Map();
 function listCollapsedColumns(project){
   let key=`flujo:list-collapsed:${data.user.id}:${project}`;
@@ -214,15 +299,15 @@ function taskListCount(task,kind,count){
 }
 function renderTaskList(){
   let p=data.projects.find(x=>x.id===active),board=$('#board');if(!p||!board)return;
-  let writable=p.role!=='viewer',query=normalizeSearch(filter),subtasks=new Map(),collapsed=listCollapsedColumns(p.id);
+  let writable=p.role!=='viewer',query=normalizeSearch(filter),subtasks=new Map(),collapsed=listCollapsedColumns(p.id),filters=projectFilters(p),dates=projectFilterDates(projectFilterDate(new Date()));
   for(let task of data.tasks)if(task.parent_id)subtasks.set(task.parent_id,(subtasks.get(task.parent_id)||0)+1);
   board.innerHTML=`<div class="task-list-wrap"><table class="task-list"><thead><tr><th scope="col">Tarea</th><th scope="col">Estado</th><th scope="col">Responsable</th><th scope="col">Fecha límite</th><th scope="col">Prioridad</th>${writable?'<th scope="col">Orden y columna</th>':''}</tr></thead>${p.columns.map(column=>{
-    let all=listColumnTasks(p.id,column.id),tasks=all.filter(t=>matchesSearch(t,query));
+    let all=listColumnTasks(p.id,column.id),tasks=all.filter(t=>matchesSearch(t,query)&&matchesProjectFilters(t,filters,dates));
     let hidden=collapsed.includes(column.id);
     return `<tbody data-column="${column.id}" ondragover="listDragOver(event)" ondrop="dropListTask(event)"><tr class="task-list-group"><th colspan="${writable?6:5}" scope="colgroup"><button type="button" class="task-list-toggle" data-name="${esc(column.name)}" aria-label="${hidden?'Expandir':'Contraer'} ${esc(column.name)}" aria-expanded="${!hidden}" onclick="toggleListColumn(this,${column.id})">▾</button><span class="status-dot" style="background:${esc(column.color||'#a5a3ab')}"></span> ${esc(column.name)} <span class="count">${tasks.length}</span>${writable?` <button type="button" class="text-button" onclick="newTask(${column.id})" aria-label="Agregar tarea a ${esc(column.name)}">＋ Agregar tarea</button>`:''}</th></tr>${tasks.map(t=>{
       let editable=writable&&t.can_edit,controls=taskQuickControls(t,editable),index=all.findIndex(x=>x.id===t.id),subtaskCount=subtasks.get(t.id)||0;
       return `<tr class="task-list-row" data-id="${t.id}" ${hidden?'hidden':''}><td>${editable?`<span class="task-list-handle" draggable="true" ondragstart="startListDrag(event,${t.id})" ondragend="endListDrag()" title="Arrastrar tarea" aria-label="Arrastrar ${esc(t.title)}">⠿</span>`:''}<button type="button" class="task-list-title" onclick="openTask(${t.id})">${esc(t.title)}</button>${t.task_type?`<small>${esc(t.task_type.name)}</small>`:''}${subtaskCount?taskListCount(t,'subtareas',subtaskCount):''}${t.comment_count?taskListCount(t,'comentarios',t.comment_count):''}</td><td>${controls.statusControl}</td><td>${controls.personControl}</td><td>${controls.dateControl}</td><td>${controls.priorityControl}</td>${writable?`<td>${editable?`<div class="task-list-move"><button type="button" onclick="moveListTask(${t.id},${column.id},-1,this)" aria-label="Subir ${esc(t.title)}" ${index===0?'disabled':''}>↑</button><button type="button" onclick="moveListTask(${t.id},${column.id},1,this)" aria-label="Bajar ${esc(t.title)}" ${index===all.length-1?'disabled':''}>↓</button><select aria-label="Mover ${esc(t.title)} a columna" onchange="moveListTask(${t.id},Number(this.value),0,this)">${p.columns.map(c=>`<option value="${c.id}" ${c.id===column.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>`:''}</td>`:''}</tr>`;
-    }).join('')||`<tr class="task-list-empty-row" ${hidden?'hidden':''}><td colspan="${writable?6:5}" class="task-list-empty">${query?'Sin resultados en esta columna.':'Sin tareas en esta columna.'}</td></tr>`}</tbody>`;
+    }).join('')||`<tr class="task-list-empty-row" ${hidden?'hidden':''}><td colspan="${writable?6:5}" class="task-list-empty">${query||projectFilterCount(filters)?'Sin resultados en esta columna.':'Sin tareas en esta columna.'}</td></tr>`}</tbody>`;
   }).join('')}</table></div>`;
   for(let cell of board.querySelectorAll('.task-list-row > td, .task-list-empty-row > td')){
     let fold=document.createElement('div'),content=document.createElement('div');fold.className='task-list-cell-fold';
@@ -281,8 +366,8 @@ function renderBoard(){
   if(boardView==='list')return renderTaskList();
   saveBoardScroll();
   let p=data.projects.find(x=>x.id===active),orphan=active===0,board=$('#board');if(!board)return;let subtaskCounts=new Map();for(let task of data.tasks)if(task.parent_id)subtaskCounts.set(task.parent_id,(subtaskCounts.get(task.parent_id)||0)+1);
-  let query=normalizeSearch(filter),matched=new Map(),match=t=>{if(!matched.has(t.id))matched.set(t.id,matchesSearch(t,query));return matched.get(t.id)};
-  let scoped=orphan?data.tasks.filter(t=>!t.has_projects&&!t.parent_id):data.tasks.filter(t=>t.placements.some(x=>x.project_id===active));let found=scoped.filter(match).length,count=$('#boardCount');if(count)count.textContent=filter.trim()?`${found} de ${scoped.length} ${scoped.length===1?'tarea':'tareas'}`:`${scoped.length} ${scoped.length===1?'tarea':'tareas'}`;
+  let query=normalizeSearch(filter),matched=new Map(),filters=p?projectFilters(p):null,dates=filters?projectFilterDates(projectFilterDate(new Date())):null,match=t=>{if(!matched.has(t.id))matched.set(t.id,matchesSearch(t,query)&&(!filters||matchesProjectFilters(t,filters,dates)));return matched.get(t.id)};
+  let scoped=orphan?data.tasks.filter(t=>!t.has_projects&&!t.parent_id):data.tasks.filter(t=>t.placements.some(x=>x.project_id===active));let found=scoped.filter(match).length,count=$('#boardCount');if(count)count.textContent=filter.trim()||(filters&&projectFilterCount(filters))?`${found} de ${scoped.length} ${scoped.length===1?'tarea':'tareas'}`:`${scoped.length} ${scoped.length===1?'tarea':'tareas'}`;
   if(orphan){let ts=data.tasks.filter(t=>!t.has_projects&&!t.parent_id&&match(t));board.innerHTML=`<div class="orphan-list">${ts.map(t=>card(t,subtaskCounts.get(t.id)||0)).join('')||`<div class="empty-state">${filter.trim()?'No se encontraron tareas.':'No hay tareas sin proyecto.'}</div>`}</div>`;return}
   if(!p)return;let writable=p.role!=='viewer',collapsed=collapsedColumns(p.id);
   board.innerHTML=`<div class="board" data-project="${p.id}" tabindex="0" role="region" aria-label="Columnas del tablero" ondragover="columnDragOver(event)" ondrop="dropColumn(event)">${p.columns.map(c=>{
@@ -826,13 +911,14 @@ function openProjectMembers(){
 }
 const renderBoardWithoutAutomations=render;
 render=function(){
-  renderBoardWithoutAutomations();let p=data.projects.find(x=>x.id===active),heading=$('.project-title-row');
+  closeProjectFilters();renderBoardWithoutAutomations();let p=data.projects.find(x=>x.id===active),heading=$('.project-title-row');
   let caption=$('#mainSidebar .nav-caption');if(caption){let button=document.createElement('button');button.type='button';button.className='nav-item'+(active==='mine'?' selected':'');button.setAttribute('aria-label','Mis tareas');button.innerHTML=`<span>${icon('tasks')}</span><span class="nav-label">Mis tareas</span><em>${data.tasks.filter(t=>t.assignee_id===data.user.id&&!taskStatus(t)?.is_done).length}</em>`;button.onclick=()=>selectProject('mine');caption.after(button)}
   if(active==='mine'){renderMyTasks();return}
   if(p){
     let settings=heading?.querySelector('.project-settings-trigger');if(settings){settings.setAttribute('aria-label','Editar proyecto');settings.dataset.tooltip='Editar proyecto'}
     let stack=$('.member-stack');if(stack)stack.innerHTML=projectMemberStack(p);
     let first=$('.tabs > .tab');if(first){let tab=document.createElement('button');tab.type='button';tab.className='tab'+(boardView==='list'?' active':'');tab.textContent='☷  Lista';tab.onclick=()=>setBoardView('list');first.after(tab)}
+    if(boardView==='board'||boardView==='list'){let tabs=$('.tabs');if(tabs){let button=document.createElement('button');button.type='button';button.className='project-filter-trigger';button.setAttribute('aria-haspopup','dialog');button.setAttribute('aria-expanded','false');button.onclick=()=>openProjectFilters(button);let right=tabs.querySelector('.tab-right');tabs.insertBefore(button,right||null);updateProjectFilterButton(p)}}
     if(boardView==='list'){
       let label=document.createElement('label');label.className='search top-search';label.innerHTML='<span aria-hidden="true">⌕</span><input type="search" aria-label="Buscar tareas del tablero por nombre o descripción" placeholder="Buscar en este tablero">';
       let input=label.querySelector('input');input.value=filter;input.oninput=()=>{filter=input.value;renderTaskList()};$('.topbar .today')?.before(label);

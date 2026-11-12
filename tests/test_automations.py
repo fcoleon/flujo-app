@@ -92,8 +92,8 @@ class AutomationsIntegrationTest(unittest.TestCase):
         self.assertEqual([r['rule_id'] for r in reversed(runs)], [a['id'], b['id'], d['id']])
         self.assertTrue(all(r['outcome'] == 'success' and r['actor_id'] == 1 for r in runs))
         with app.db() as c:
-            task = c.execute('SELECT priority,status_id FROM tasks WHERE id=?', (tid,)).fetchone()
-            self.assertEqual(tuple(task), ('Normal', self.done))
+            task = c.execute('SELECT priority,status_id,completed_at FROM tasks WHERE id=?', (tid,)).fetchone()
+            self.assertEqual(tuple(task), ('Normal', self.done, '2026-11-03T12:00:00+00:00'))
             self.assertEqual([r[0] for r in c.execute('SELECT event FROM metric_events WHERE task_id=? ORDER BY id', (tid,))], ['created', 'completed'])
             self.assertEqual(app.analytics(c, 1, '2026-11')['totals'], {'created': 1, 'completed': 1, 'reopened': 0})
         history = self.request('GET', f'history/{tid}').get_json()

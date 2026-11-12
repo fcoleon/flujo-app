@@ -423,6 +423,7 @@ class TaskTypesTest(unittest.TestCase):
         self.assertEqual(self.post('task-types/update',{'id':typ,'name':'Especial','statuses':sts})[0],200)
         with app.db() as c:
             self.assertEqual([r['event'] for r in c.execute('SELECT event FROM metric_events WHERE task_id=? ORDER BY id',(tid,))],['created','completed'])
+            self.assertEqual(c.execute('SELECT completed_at FROM tasks WHERE id=?',(tid,)).fetchone()[0],c.execute("SELECT occurred_at FROM metric_events WHERE task_id=? AND event='completed'",(tid,)).fetchone()[0])
 
     def test_global_base_adopts_project_base_without_changing_completion(self):
         with app.db() as c:
@@ -432,12 +433,13 @@ class TaskTypesTest(unittest.TestCase):
             c.execute("UPDATE task_types SET name='Base personalizada' WHERE id=?",(project_type,))
         tid=self.post('tasks',{'title':'Sin proyecto'})[1]['id']
         self.post('task/type-status',{'id':tid,'type_id':global_type,'status_id':global_done})
-        with app.db() as c: before=c.execute('SELECT COUNT(*) FROM metric_events').fetchone()[0]
+        with app.db() as c: before=c.execute('SELECT COUNT(*) FROM metric_events').fetchone()[0];completed=c.execute('SELECT completed_at FROM tasks WHERE id=?',(tid,)).fetchone()[0]
         self.assertEqual(self.post('task/project',{'id':tid,'project_id':1})[0],200)
         with app.db() as c:
             row=c.execute('SELECT type_id,status_id FROM tasks WHERE id=?',(tid,)).fetchone()
             self.assertEqual((row['type_id'],row['status_id']),(project_type,project_done))
             self.assertEqual(c.execute('SELECT COUNT(*) FROM metric_events').fetchone()[0],before)
+            self.assertEqual(c.execute('SELECT completed_at FROM tasks WHERE id=?',(tid,)).fetchone()[0],completed)
         self.assertEqual(self.post('task/type-status',{'id':tid,'type_id':global_type})[0],400)
 
     def test_migrate_legacy_general_base_and_preserve_custom_types(self):
@@ -552,6 +554,56 @@ class TaskTypesTest(unittest.TestCase):
             self.assertEqual((task['title'],task['priority']),('Título válido','Normal'))
             c.execute('UPDATE tasks SET title=? WHERE id=?',('Antiguo\ntítulo',tid))
         self.assertEqual(self.post('task/update',{'id':tid,'priority':'Alta'},user=2)[0],200)
+
+    def test_completion_timestamp_tracks_reopen_and_projectless_tasks(self):
+        tid=self.post('tasks',{'title':'Prueba','project_id':1,'column_id':1},user=2)[1]['id']
+        orphan=self.post('tasks',{'title':'Sin proyecto'})[1]['id']
+        with app.db() as c:
+            task=c.execute('SELECT type_id,status_id FROM tasks WHERE id=?',(tid,)).fetchone()
+            done=c.execute('SELECT id FROM task_statuses WHERE type_id=? AND is_done=1',(task['type_id'],)).fetchone()['id']
+            second=c.execute("INSERT INTO task_statuses(type_id,name,color,is_done,position) VALUES(?, 'Otro','#123456',1,2)",(task['type_id'],)).lastrowid
+            orphan_type=c.execute('SELECT type_id FROM tasks WHERE id=?',(orphan,)).fetchone()['type_id']
+            orphan_done=c.execute('SELECT id FROM task_statuses WHERE type_id=? AND is_done=1',(orphan_type,)).fetchone()['id']
+        with patch('app.now',return_value='2026-01-05T10:00:00+00:00'):
+            self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':done},user=2)
+            self.post('task/type-status',{'id':orphan,'type_id':orphan_type,'status_id':orphan_done})
+        with patch('app.now',return_value='2026-01-06T10:00:00+00:00'):
+            self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':second},user=2)
+        with app.db() as c:
+            values={r['id']:r['completed_at'] for r in c.execute('SELECT id,completed_at FROM tasks WHERE id IN (?,?)',(tid,orphan))}
+            self.assertEqual(values,{tid:'2026-01-05T10:00:00+00:00',orphan:'2026-01-05T10:00:00+00:00'})
+        self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':task['status_id']},user=2)
+        with app.db() as c: self.assertIsNone(c.execute('SELECT completed_at FROM tasks WHERE id=?',(tid,)).fetchone()['completed_at'])
+        with patch('app.now',return_value='2026-01-07T10:00:00+00:00'):
+            self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':done},user=2)
+        task_data=next(t for t in self.get('data',2)[1]['tasks'] if t['id']==tid)
+        self.assertEqual(task_data['completed_at'],'2026-01-07T10:00:00+00:00')
+
+    def test_completion_timestamp_migrates_known_history_once(self):
+        old=app.DB
+        with tempfile.TemporaryDirectory() as temp:
+            try:
+                app.DB=os.path.join(temp,'legacy.db')
+                with sqlite3.connect(app.DB) as c:
+                    c.execute("CREATE TABLE projects(id INTEGER PRIMARY KEY,name TEXT NOT NULL,color TEXT NOT NULL DEFAULT '#7765d7',description TEXT NOT NULL DEFAULT '')")
+                    c.execute('CREATE TABLE task_types(id INTEGER PRIMARY KEY,project_id INTEGER,name TEXT NOT NULL,is_base INTEGER NOT NULL DEFAULT 0)')
+                    c.execute('CREATE TABLE task_statuses(id INTEGER PRIMARY KEY,type_id INTEGER NOT NULL,name TEXT NOT NULL,color TEXT NOT NULL,is_done INTEGER NOT NULL,position INTEGER NOT NULL)')
+                    c.execute("CREATE TABLE tasks(id INTEGER PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',assignee_id INTEGER,due_date TEXT,priority TEXT NOT NULL DEFAULT 'Normal',parent_id INTEGER,created_at TEXT NOT NULL,type_id INTEGER,status_id INTEGER)")
+                    c.execute('CREATE TABLE metric_events(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL,task_id INTEGER NOT NULL,event TEXT NOT NULL,occurred_at TEXT NOT NULL,task_created_at TEXT NOT NULL,type_id INTEGER NOT NULL,type_name TEXT NOT NULL)')
+                    c.execute("INSERT INTO projects VALUES(1,'Proyecto','#7765d7','')")
+                    c.execute("INSERT INTO task_types VALUES(1,1,'Tarea',1)")
+                    c.executemany('INSERT INTO task_statuses VALUES(?,?,?,?,?,?)',[(1,1,'En curso','#111111',0,0),(2,1,'Finalizada','#222222',1,1)])
+                    for tid,status in ((1,2),(2,2),(3,1),(4,2)): c.execute('INSERT INTO tasks(id,title,created_at,type_id,status_id) VALUES(?,?,?,?,?)',(tid,str(tid),'2020',1,status))
+                    for tid,event,stamp in ((1,'completed','2026-01-01T00:00:00+00:00'),(1,'reopened','2026-01-02T00:00:00+00:00'),(1,'completed','2026-01-03T00:00:00+00:00'),(3,'completed','2026-01-01T00:00:00+00:00'),(4,'completed','2026-01-01T00:00:00+00:00'),(4,'reopened','2026-01-02T00:00:00+00:00')):
+                        c.execute('INSERT INTO metric_events(project_id,task_id,event,occurred_at,task_created_at,type_id,type_name) VALUES(1,?,?,?,?,1,?)',(tid,event,stamp,'2020','Tarea'))
+                app.init()
+                with app.db() as c:
+                    values={r['id']:r['completed_at'] for r in c.execute('SELECT id,completed_at FROM tasks')}
+                    self.assertEqual(values,{1:'2026-01-03T00:00:00+00:00',2:None,3:None,4:None})
+                    c.execute("UPDATE tasks SET completed_at='2026-02-01T00:00:00+00:00' WHERE id=1")
+                app.init()
+                with app.db() as c: self.assertEqual(c.execute('SELECT completed_at FROM tasks WHERE id=1').fetchone()[0],'2026-02-01T00:00:00+00:00')
+            finally: app.DB=old
 
     def test_public_project_ids_are_stable_and_private(self):
         app.init();app.init()

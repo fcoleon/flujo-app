@@ -14,6 +14,7 @@ function clearInterval(){} function clearTimeout(){scheduled=null} function setT
 function moveOrder(ids,id,next){ids=ids.filter(x=>x!==id);let i=ids.indexOf(next);ids.splice(i<0?ids.length:i,0,id);return ids}
 function api(path,body){sent={path,body};return new Promise(()=>{})}
 function taskQuickControls(t,editable){return {statusControl:editable?'EDITAR_ESTADO':'VER_ESTADO',personControl:'RESPONSABLE',dateControl:'FECHA',priorityControl:'PRIORIDAD'}}
+function projectFilters(){return {}} function projectFilterDate(){return '2026-01-01'} function projectFilterDates(){return {}} function matchesProjectFilters(){return true} function projectFilterCount(){return 0}
 const assert=(v,message)=>{if(!v)throw Error(message)};
 eval(source.slice(source.indexOf('const listCollapsedState='),source.indexOf('function renderBoard()'))+`
   data.tasks[0].comment_count=2;data.tasks.push({id:4,parent_id:1,placements:[]});
