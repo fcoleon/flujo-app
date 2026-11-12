@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 import subprocess
 import stat
+import sys
+import sqlite3
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -18,12 +20,71 @@ spec.loader.exec_module(deploy)
 
 
 class DeploymentConfigTest(unittest.TestCase):
+    def setUp(self):
+        self.pid_patch = patch.object(deploy, 'supervisor_process_pid', return_value=None)
+        self.pid_patch.start()
+        self.addCleanup(self.pid_patch.stop)
+
     def test_gunicorn_uses_directory_permissions_without_acl(self):
         config = DEPLOY_SCRIPT.parent / 'gunicorn.conf.py'
         with patch('settings.load_settings', return_value={'socket': '/run/custom/app.sock'}):
             gunicorn = runpy.run_path(str(config))
             self.assertEqual(0o777 & ~gunicorn['umask'], 0o666)
             self.assertNotIn('when_ready', gunicorn)
+
+    def test_prepare_venv_checks_required_modules_exist_and_are_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'templates').mkdir()
+            (root / 'templates' / 'index.html').touch()
+            modules = ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py',
+                       'slack_notify.py', 'slack_auth.py', 'automations.py')
+            for name in modules:
+                (root / name).touch()
+            with patch.object(deploy, 'APP_DIR', root):
+                for name in ('slack_auth.py', 'automations.py'):
+                    path = root / name
+                    with self.subTest(name=name, failure='missing'):
+                        path.unlink()
+                        with patch.object(deploy, 'as_user') as run, self.assertRaisesRegex(ValueError, 'aplicación completa'):
+                            deploy.prepare_venv('ubuntu', root / 'tasks.db', 'UTC')
+                        run.assert_not_called()
+                        path.touch()
+                    with self.subTest(name=name, failure='unreadable'):
+                        def check(user, *command):
+                            if command == ('test', '-r', path):
+                                raise subprocess.CalledProcessError(1, command)
+                        with patch.object(deploy, 'as_user', side_effect=check), self.assertRaisesRegex(ValueError, re.escape(name)):
+                            deploy.prepare_venv('ubuntu', root / 'tasks.db', 'UTC')
+
+    def test_slack_supervisor_migration_is_idempotent_and_rejects_conflicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); config = root / 'flujo.conf'
+            config.write_text('[program:flujo-app]\nuser=ubuntu\n')
+            with patch.object(deploy, 'SUPERVISOR_FILE', config):
+                deploy.prepare_slack_supervisor('ubuntu')
+                migrated = config.read_text()
+                deploy.prepare_slack_supervisor('ubuntu')
+                self.assertEqual(config.read_text(), migrated)
+                self.assertIn('[program:flujo-app]\nuser=ubuntu', migrated)
+                config.write_text(migrated.replace('user=ubuntu\nenvironment=', 'user=other\nenvironment='))
+                with self.assertRaisesRegex(ValueError, 'otra configuración'):
+                    deploy.prepare_slack_supervisor('ubuntu')
+
+    def test_worker_recovers_after_application_initializes_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); config = root / 'config.ini'; db = root / 'tasks.db'
+            config.write_text(f'[app]\ndatabase={db}\ntimezone=UTC\n')
+            env = {**os.environ, 'APP_CONFIG': str(config), 'FLUJO_CONFIG_ONLY': '1'}
+            worker = [sys.executable, str(deploy.APP_DIR / 'slack_notify.py')]
+            failed = subprocess.run(worker, env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn('slack_preferences', failed.stderr)
+            subprocess.run([sys.executable, '-c', 'import app; app.init()'], env=env, check=True, timeout=10)
+            with self.assertRaises(subprocess.TimeoutExpired):
+                subprocess.run(worker, env=env, capture_output=True, timeout=2)
+            with sqlite3.connect(db) as connection:
+                self.assertIsNotNone(connection.execute("SELECT name FROM sqlite_master WHERE name='slack_queue'").fetchone())
 
     def test_generated_templates_fill_all_values_and_preserve_nginx_variables(self):
         values = {'APP_DIR': '/srv/flujo', 'APP_USER': 'ubuntu', 'SOCKET_PATH': '/run/flujo/flujo.sock',
@@ -36,6 +97,9 @@ class DeploymentConfigTest(unittest.TestCase):
         self.assertIn('user=ubuntu', supervisor)
         self.assertIn('APP_CONFIG="/srv/flujo/config.ini"', supervisor)
         self.assertIn('FLUJO_CONFIG_ONLY="1"', supervisor)
+        self.assertIn('[program:flujo-slack]', supervisor)
+        self.assertIn('command=/srv/flujo/.venv/bin/python /srv/flujo/slack_notify.py', supervisor)
+        self.assertIn('priority=200\nstartsecs=0', supervisor)
         self.assertNotIn('TASKS_DB=', supervisor)
         self.assertIn('server_name tareas.ejemplo.com;', nginx)
         self.assertIn('proxy_pass http://unix:/run/flujo/flujo.sock;', nginx)
@@ -120,6 +184,7 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['nginx', '-t'], ['supervisorctl', 'reread'], ['supervisorctl', 'update', 'flujo-app'],
                 ['supervisorctl', 'restart', 'flujo-app'], ['supervisorctl', 'status', 'flujo-app'],
+                ['supervisorctl', 'update', 'flujo-slack'], ['supervisorctl', 'status', 'flujo-slack'],
                 ['systemctl', 'reload', 'nginx'],
             ])
 
@@ -269,7 +334,8 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertFalse(socket_dir.call_args.kwargs['install'])
             self.assertFalse(prepare.call_args.kwargs['create'])
             self.assertEqual([call.args[0] for call in run.call_args_list], [
-                ['supervisorctl','restart','flujo-app'], ['supervisorctl','status','flujo-app']])
+                ['supervisorctl','reread'], ['supervisorctl','restart','flujo-app'], ['supervisorctl','status','flujo-app'],
+                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack']])
 
     def test_update_starts_stopped_flujo(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -285,7 +351,8 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy,'ensure_socket_directory'), patch.object(deploy,'prepare_venv'), patch.object(deploy,'run') as run:
                 self.assertEqual(deploy.main(['update']),0)
             self.assertEqual([call.args[0] for call in run.call_args_list], [
-                ['supervisorctl','start','flujo-app'], ['supervisorctl','status','flujo-app']])
+                ['supervisorctl','reread'], ['supervisorctl','start','flujo-app'], ['supervisorctl','status','flujo-app'],
+                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack']])
 
     def test_update_refuses_mismatched_nginx_socket(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -407,8 +474,9 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertIn(f'alias {root}/static/;',site.read_text())
             self.assertNotIn('flujo-app-static.conf',site.read_text())
             self.assertEqual([call.args[0] for call in run.call_args_list], [
-                ['nginx','-t'], ['supervisorctl','restart','flujo-app'],
-                ['supervisorctl','status','flujo-app'], ['systemctl','reload','nginx']])
+                ['supervisorctl','reread'], ['nginx','-t'], ['supervisorctl','restart','flujo-app'],
+                ['supervisorctl','status','flujo-app'], ['systemctl','reload','nginx'],
+                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack']])
 
     def test_static_nginx_migration_keeps_ssl_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

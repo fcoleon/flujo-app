@@ -146,7 +146,7 @@ def matches(conditions, state, today):
     return True
 
 
-def run(c, tid, project, events, actor, now, record, metric_event):
+def run(c, tid, project, events, actor, now, record, metric_event, notify_assignment):
     initial = snapshot(c, tid, project) if project else None
     if not initial: return []
     rules = [rule_data(r) for r in c.execute('SELECT * FROM automation_rules WHERE project_id=? AND enabled=1 ORDER BY position,id', (project,))]
@@ -183,6 +183,7 @@ def run(c, tid, project, events, actor, now, record, metric_event):
                         if bool(old_done) != bool(status['is_done']): metric_event(c, tid, 'completed' if status['is_done'] else 'reopened', actor)
                     else:
                         c.execute(f'UPDATE tasks SET {field}=? WHERE id=?', (int(v) if field == 'assignee_id' and v else v or None, tid))
+                        if field == 'assignee_id' and v: notify_assignment(c,tid,actor)
                     record(c, tid, actor, f'automatización «{rule["name"]}»: cambió {field} a {v or "vacío"}')
                     generated.append((field, old, v, snapshot(c, tid, project)))
                 c.execute('RELEASE automation_rule')

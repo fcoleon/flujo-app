@@ -45,4 +45,5 @@ def load_settings(config_path=None, environ=None):
     socket_path = Path(values['socket'])
     if not socket_path.is_absolute() or not values['socket'].strip():
         raise ValueError('La ruta del socket debe ser absoluta')
-    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'socket': str(socket_path), 'allow_self_registration': allow_self_registration, 'config_path': str(path)}
+    slack = {key: parser.get('slack', key, fallback='').strip() for key in ('client_id', 'client_secret', 'base_url')}
+    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'socket': str(socket_path), 'allow_self_registration': allow_self_registration, 'config_path': str(path), 'slack': slack, 'slack_base_url': slack['base_url']}
