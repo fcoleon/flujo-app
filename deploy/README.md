@@ -85,6 +85,23 @@ Abre `http://localhost:18080` en tu computador con el túnel activo.
 
 ### Slack
 
+#### Configurar la aplicación en Slack
+
+1. Entra en [Slack API: Your Apps](https://api.slack.com/apps) y abre tu aplicación.
+2. En el menú lateral, selecciona **OAuth & Permissions**. En **Redirect URLs**, pulsa **Add New Redirect URL** y agrega ambas direcciones, sustituyendo el dominio por el origen HTTPS público de Flujo:
+
+   ```text
+   https://tareas.ejemplo.com/slack/callback/install
+   https://tareas.ejemplo.com/slack/callback/link
+   ```
+
+   Pulsa **Save URLs**. Las direcciones deben coincidir con el `base_url` configurado en el servidor.
+3. En la misma página, bajo **Scopes**, agrega `chat:write` en **Bot Token Scopes** y `openid` en **User Token Scopes**. Flujo solicita `openid` durante el flujo de Sign in with Slack para vincular cada cuenta; no requiere los permisos `email` ni `profile`.
+4. En **Basic Information → App Credentials**, consulta el **Client ID** y el **Client Secret** para configurar el servidor. Mantén el secreto privado.
+5. La rotación de tokens de la aplicación Slack debe permanecer desactivada: el worker no renueva tokens.
+
+#### Configurar el servidor
+
 Configura las credenciales de tu aplicación Slack en `config.ini`:
 
 ```ini
@@ -94,14 +111,9 @@ client_secret = SECRETO_DE_CLIENTE
 base_url = https://tareas.ejemplo.com
 ```
 
-`base_url` debe ser el origen público HTTPS de Flujo: esquema, dominio y puerto opcional, sin ruta (salvo `/`), credenciales, consulta ni fragmento. Por ejemplo, `https://tareas.ejemplo.com`; no se admite instalar Flujo bajo una subruta. En la configuración OAuth de Slack registra exactamente estas dos Redirect URLs, sustituyendo el origen por el configurado:
+`base_url` debe ser el origen público HTTPS de Flujo: esquema, dominio y puerto opcional, sin ruta (salvo `/`), credenciales, consulta ni fragmento. Por ejemplo, `https://tareas.ejemplo.com`; no se admite instalar Flujo bajo una subruta.
 
-```text
-https://tareas.ejemplo.com/slack/callback/install
-https://tareas.ejemplo.com/slack/callback/link
-```
-
-Configura el permiso bot `chat:write` y Sign in with Slack con `openid`. La rotación de tokens de la aplicación Slack debe permanecer desactivada: el worker no renueva tokens. Un administrador de Flujo inicia la instalación del workspace; cada usuario vincula su propia cuenta del mismo workspace. La desconexión individual elimina el vínculo; la desconexión administrativa elimina la instalación y vínculos locales. Se intenta revocar los tokens en Slack: si falla, la desconexión local permanece y el worker reintenta la revocación. Mientras haya revocaciones pendientes no se inician nuevas conexiones. Para retirar la aplicación del workspace, desinstálala también desde Slack. Solo se admite un workspace a la vez.
+Un administrador de Flujo inicia la instalación del workspace; cada usuario vincula su propia cuenta del mismo workspace. La desconexión individual elimina el vínculo; la desconexión administrativa elimina la instalación y vínculos locales. Se intenta revocar los tokens en Slack: si falla, la desconexión local permanece y el worker reintenta la revocación. Mientras haya revocaciones pendientes no se inician nuevas conexiones. Para retirar la aplicación del workspace, desinstálala también desde Slack. Solo se admite un workspace a la vez.
 
 Protege `config.ini` (por ejemplo `chmod 600 config.ini`, propiedad del usuario de la aplicación), la base SQLite, sus respaldos y el directorio: contienen credenciales o tokens. No publiques esos archivos ni sus secretos. Reinicia ambos procesos con `sudo python3 deploy/deploy.py update` tras cambiar la configuración.
 
