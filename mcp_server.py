@@ -286,5 +286,11 @@ def socket_path():
 
 
 if __name__ == '__main__':
+    import sys
     import uvicorn
-    uvicorn.run(asgi_app(), uds=str(socket_path()), log_level='info')
+    # Modo local sin Nginx: --port <n> sirve en TCP 127.0.0.1; sin flag, socket Unix de producción.
+    args = sys.argv[1:]
+    if args and args[0] == '--port':
+        uvicorn.run(asgi_app(), host='127.0.0.1', port=int(args[1]), log_level='info')
+    else:
+        uvicorn.run(asgi_app(), uds=str(socket_path()), log_level='info')
