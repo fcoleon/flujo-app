@@ -22,6 +22,7 @@ sys.path.insert(0, str(APP_DIR))
 from settings import load_settings
 
 PROGRAM = 'flujo-app'
+SLACK_PROGRAM = 'flujo-slack'
 SUPERVISOR_FILE = Path('/etc/supervisor/conf.d/flujo-app.conf')
 NGINX_FILE = Path('/etc/nginx/sites-available/flujo-app')
 NGINX_LINK = Path('/etc/nginx/sites-enabled/flujo-app')
@@ -100,8 +101,8 @@ def check_writable(user, path, description):
         fail(f'{user} necesita permiso de escritura para {description}: {path}')
 
 
-def supervisor_process_pid():
-    result = subprocess.run(['supervisorctl', 'pid', PROGRAM], capture_output=True, text=True)
+def supervisor_process_pid(program=PROGRAM):
+    result = subprocess.run(['supervisorctl', 'pid', program], capture_output=True, text=True)
     output = (result.stdout + '\n' + result.stderr).strip()
     if result.returncode == 0 and output.isdigit():
         return int(output)
@@ -269,7 +270,7 @@ def installed_socket_group(user, socket_path=None, requested_group=None):
 
 
 def prepare_venv(user, db_path, timezone, create=True):
-    modules = [APP_DIR / name for name in ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py')]
+    modules = [APP_DIR / name for name in ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py', 'slack_notify.py', 'slack_auth.py', 'automations.py')]
     if not all(path.is_file() for path in (*modules, APP_DIR / 'templates' / 'index.html')):
         fail(f'No se encontró la aplicación completa en {APP_DIR}. Copia sus archivos antes de continuar.')
     for path in (APP_DIR, *modules, APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'style.css', 'favicon.svg'))):
@@ -462,8 +463,44 @@ def apply_config(supervisor_config, nginx_config, skip_nginx):
     run(['supervisorctl', 'update', PROGRAM])
     run(['supervisorctl', 'restart', PROGRAM])
     run(['supervisorctl', 'status', PROGRAM])
+    run(['supervisorctl', 'update', SLACK_PROGRAM])
+    if supervisor_process_pid(SLACK_PROGRAM) == 0:
+        run(['supervisorctl', 'start', SLACK_PROGRAM])
+    run(['supervisorctl', 'status', SLACK_PROGRAM])
     if not skip_nginx:
         run(['systemctl', 'reload', 'nginx'])
+
+
+def prepare_slack_supervisor(user):
+    path = supervisor_config_path()
+    text = path.read_text(encoding='utf-8')
+    config = configparser.RawConfigParser(interpolation=None)
+    config.read_string(text)
+    expected = render('supervisor.conf.template', {'APP_DIR': APP_DIR, 'APP_USER': user,
+                      'CONFIG_PATH': APP_DIR / 'config.ini'})
+    worker = expected[expected.index('[program:flujo-slack]'):]
+    for other in path.parent.glob('*.conf'):
+        if other == path or other.is_symlink() or not other.is_file():
+            continue
+        candidate = configparser.RawConfigParser(interpolation=None)
+        try:
+            candidate.read_string(other.read_text(encoding='utf-8'))
+        except (configparser.Error, UnicodeError):
+            continue
+        if candidate.has_section('program:' + SLACK_PROGRAM):
+            fail(f'{SLACK_PROGRAM} ya está configurado en {other}; revísalo antes de continuar.')
+    if config.has_section('program:' + SLACK_PROGRAM):
+        section = config['program:' + SLACK_PROGRAM]
+        if (section.get('directory') != str(APP_DIR) or section.get('user') != user or
+            section.get('command') != f'{APP_DIR}/.venv/bin/python {APP_DIR}/slack_notify.py' or
+            f'APP_CONFIG="{APP_DIR}/config.ini"' not in section.get('environment', '') or
+            'FLUJO_CONFIG_ONLY="1"' not in section.get('environment', '')):
+            fail(f'{SLACK_PROGRAM} tiene otra configuración; revísala antes de continuar.')
+    else:
+        if supervisor_process_pid(SLACK_PROGRAM) is not None:
+            fail('Supervisor ya tiene registrado flujo-slack sin configuración verificada.')
+        write_atomic(path, text.rstrip() + '\n\n' + worker)
+    return path
 
 
 def main(argv=None):
@@ -539,9 +576,18 @@ def main(argv=None):
         _,managed=read_socket_runtime(user)
         if managed is None:
             print(f'Aviso: asegura que {socket_path.parent} se recree al reiniciar el servidor.',flush=True)
+    config_exists = supervisor_config_path().exists()
+    if config_exists:
+        prepare_slack_supervisor(user)
+    slack_pid = supervisor_process_pid(SLACK_PROGRAM)
+    if slack_pid is not None and not config_exists:
+        fail('Supervisor ya tiene registrado flujo-slack sin configuración verificada.')
+    if slack_pid:
+        run(['supervisorctl', 'stop', SLACK_PROGRAM])
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:
+        run(['supervisorctl', 'reread'])
         if nginx_update:
             original, updated = nginx_update
             write_atomic(NGINX_FILE, updated)
@@ -556,6 +602,10 @@ def main(argv=None):
         else:
             run(['supervisorctl', 'start' if own_pid == 0 else 'restart', PROGRAM])
             run(['supervisorctl', 'status', PROGRAM])
+        run(['supervisorctl', 'update', SLACK_PROGRAM])
+        if supervisor_process_pid(SLACK_PROGRAM) == 0:
+            run(['supervisorctl', 'start', SLACK_PROGRAM])
+        run(['supervisorctl', 'status', SLACK_PROGRAM])
     print('Flujo está en ejecución.')
     return 0
 
