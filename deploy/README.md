@@ -34,6 +34,8 @@ sudo python3 deploy/deploy.py install --server-name tareas.ejemplo.com --user ub
 
 El script crea `.venv`, instala las dependencias, valida el socket, configura Supervisor y Nginx y arranca la aplicación. Si el directorio del socket no existe, el script lo crea con modo `0750` y configura `systemd-tmpfiles` para recrearlo al reiniciar; su directorio superior debe existir. Si ya existe y no fue creado por el script, conserva sus permisos y debes asegurar que cumpla esos requisitos y se mantenga disponible tras reiniciar. El acceso al socket se controla mediante ese directorio; el socket se crea con modo `0666`, accesible solo a quienes puedan atravesarlo. El grupo de Nginx es `www-data` por defecto; si usa otro grupo, indícalo con `--nginx-group GRUPO`. El script no cambia la membresía de los usuarios en los grupos.
 
+Supervisor también ejecuta `flujo-slack` con el mismo usuario, directorio, `APP_CONFIG` y `FLUJO_CONFIG_ONLY=1`. Gunicorn tiene prioridad de arranque 100 y el worker 200; el master de Gunicorn ejecuta `init()` antes de sus workers. La prioridad no garantiza que haya terminado la inicialización: si faltan tablas, el worker sale y Supervisor lo reinicia hasta que la base esté lista. Si la aplicación no arranca, corrige su error y revisa ambos procesos; los reinicios del worker pueden repetirse rápidamente.
+
 Se comparte el Nginx existente; no se reemplazan otros sitios ni se actualizan otros procesos de Supervisor. Agrega `--dry-run` para generar los archivos sin instalarlos. Para conservar una configuración Nginx existente, usa `--skip-nginx` y configura manualmente su destino:
 
 ```nginx
@@ -81,11 +83,50 @@ Abre `http://localhost:18080` en tu computador con el túnel activo.
 
 ## Actualizar
 
+### Slack
+
+#### Configurar la aplicación en Slack
+
+1. Entra en [Slack API: Your Apps](https://api.slack.com/apps) y abre tu aplicación.
+2. En el menú lateral, selecciona **OAuth & Permissions**. En **Redirect URLs**, pulsa **Add New Redirect URL** y agrega ambas direcciones, sustituyendo el dominio por el origen HTTPS público de Flujo:
+
+   ```text
+   https://tareas.ejemplo.com/slack/callback/install
+   https://tareas.ejemplo.com/slack/callback/link
+   ```
+
+   Pulsa **Save URLs**. Las direcciones deben coincidir con el `base_url` configurado en el servidor.
+3. En la misma página, bajo **Scopes**, agrega `chat:write` en **Bot Token Scopes** y `openid` en **User Token Scopes**. Flujo solicita `openid` durante el flujo de Sign in with Slack para vincular cada cuenta; no requiere los permisos `email` ni `profile`.
+4. En **Basic Information → App Credentials**, consulta el **Client ID** y el **Client Secret** para configurar el servidor. Mantén el secreto privado.
+5. La rotación de tokens de la aplicación Slack debe permanecer desactivada: el worker no renueva tokens.
+
+#### Configurar el servidor
+
+Configura las credenciales de tu aplicación Slack en `config.ini`:
+
+```ini
+[slack]
+client_id = ID_DE_CLIENTE
+client_secret = SECRETO_DE_CLIENTE
+base_url = https://tareas.ejemplo.com
+```
+
+`base_url` debe ser el origen público HTTPS de Flujo: esquema, dominio y puerto opcional, sin ruta (salvo `/`), credenciales, consulta ni fragmento. Por ejemplo, `https://tareas.ejemplo.com`; no se admite instalar Flujo bajo una subruta.
+
+Un administrador de Flujo inicia la instalación del workspace; cada usuario vincula su propia cuenta del mismo workspace. La desconexión individual elimina el vínculo; la desconexión administrativa elimina la instalación y vínculos locales. Se intenta revocar los tokens en Slack: si falla, la desconexión local permanece y el worker reintenta la revocación. Mientras haya revocaciones pendientes no se inician nuevas conexiones. Para retirar la aplicación del workspace, desinstálala también desde Slack. Solo se admite un workspace a la vez.
+
+Protege `config.ini` (por ejemplo `chmod 600 config.ini`, propiedad del usuario de la aplicación), la base SQLite, sus respaldos y el directorio: contienen credenciales o tokens. No publiques esos archivos ni sus secretos. Reinicia ambos procesos con `sudo python3 deploy/deploy.py update` tras cambiar la configuración.
+
+La verificación de identidad Slack requiere `PyJWT[crypto]`. `install` y `update` instalan las dependencias de `requirements.txt` en `.venv`; en una instalación manual ejecuta `.venv/bin/python -m pip install -r requirements.txt` como el usuario de la aplicación.
+
+El worker procesa hasta 100 elementos por pasada y espera 30 segundos entre pasadas; agrupa comentarios durante cinco minutos. Respeta límites de Slack con hasta ocho intentos; los pendientes vencen a los siete días y el historial finalizado se elimina después de 30. Un envío interrumpido o con resultado de red incierto queda `uncertain` y no se reintenta automáticamente para evitar duplicados. El bloqueo mediante archivo coordina workers solo en un mismo host; no ejecutes workers de la misma base en varios hosts. Revisa los logs y los estados de `slack_queue` ante fallos; una URL base inválida mantiene los mensajes pendientes hasta corregir la configuración.
+
 ### Migración manual de IDs AUTOINCREMENT
 
 Para actualizar una instalación anterior que aún no tenga esta migración, después de `git pull --rebase` y antes del despliegue normal, detén Flujo y respalda la base. Las instalaciones nuevas ya usan `AUTOINCREMENT`; no es necesario repetir este procedimiento en cada despliegue. La pausa evita que los procesos anteriores escriban mientras se reconstruyen las tablas y hasta que se inicie el código nuevo. Ejecuta la migración como el usuario de la aplicación, con permisos de escritura en la base y su directorio:
 
 ```sh
+sudo supervisorctl stop flujo-slack
 sudo supervisorctl stop flujo-app
 .venv/bin/python -c 'import os, sqlite3; from pathlib import Path; from settings import load_settings; p=Path(load_settings(environ={"FLUJO_CONFIG_ONLY":"1"})["database"]); b=p.with_name(p.name+".antes-autoincrement.bak"); fd=os.open(b,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600); os.close(fd); src=sqlite3.connect(p.as_uri()+"?mode=rw",uri=True); dst=sqlite3.connect(b); src.backup(dst); dst.close(); src.close(); print("Respaldo:",b)'
 .venv/bin/python deploy/migrate_autoincrement.py
@@ -93,6 +134,8 @@ sudo python3 deploy/deploy.py update
 ```
 
 El respaldo no sobrescribe uno existente. Si usas un `config.ini` distinto al de la raíz, proporciona su ruta al script con `--config /ruta/config.ini` y usa esa misma configuración para el respaldo. Verifica la ruta de base impresa antes de continuar; el script usa la configuración de producción e ignora `TASKS_DB`. No crea una base inexistente. Si la migración falla, revierte todos sus cambios; mantén Flujo detenido hasta resolver el error o restaurar el respaldo. La migración es idempotente y conserva los IDs, índices, relaciones y los identificadores históricos aún presentes en reglas o métricas. No puede recuperar IDs antiguos que ya no estén registrados en ningún lado.
+
+Si aún no existe `flujo-slack` en una instalación anterior, omite su comando `stop`. Mantén ambos procesos detenidos durante la migración; `update` los arranca después.
 
 ### Despliegue normal
 
@@ -123,6 +166,8 @@ Si Supervisor es de una versión anterior que guardaba la base y zona horaria en
 
 ```sh
 sudo supervisorctl status flujo-app
+sudo supervisorctl status flujo-slack
 sudo tail -f /var/log/supervisor/flujo-app.err.log
+sudo tail -f /var/log/supervisor/flujo-slack.err.log
 sudo nginx -t
 ```

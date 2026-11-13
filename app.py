@@ -114,6 +114,28 @@ def init():
                      BEGIN UPDATE tasks SET title_version=title_version+(OLD.title IS NOT NEW.title),
                          description_version=description_version+(OLD.description IS NOT NEW.description OR OLD.description_format IS NOT NEW.description_format)
                          WHERE id=NEW.id; END''')
+        c.execute('''CREATE TABLE IF NOT EXISTS slack_installations(
+                     id INTEGER PRIMARY KEY CHECK(id=1), team_id TEXT NOT NULL UNIQUE,
+                     team_name TEXT NOT NULL, bot_token TEXT NOT NULL)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS slack_accounts(
+                     installation_id INTEGER NOT NULL REFERENCES slack_installations(id) ON DELETE CASCADE,
+                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     slack_user_id TEXT NOT NULL, PRIMARY KEY(installation_id,user_id),
+                     UNIQUE(installation_id,slack_user_id))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS slack_preferences(
+                     installation_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                     project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                     assignment INTEGER NOT NULL DEFAULT 0 CHECK(assignment IN (0,1)),
+                     comment INTEGER NOT NULL DEFAULT 0 CHECK(comment IN (0,1)),
+                     completion INTEGER NOT NULL DEFAULT 0 CHECK(completion IN (0,1)),
+                     FOREIGN KEY(installation_id,user_id) REFERENCES slack_accounts(installation_id,user_id) ON DELETE CASCADE)''')
+        c.execute('''CREATE UNIQUE INDEX IF NOT EXISTS slack_preferences_project ON slack_preferences(installation_id,user_id,project_id)
+                     WHERE project_id IS NOT NULL''')
+        c.execute('''CREATE UNIQUE INDEX IF NOT EXISTS slack_preferences_orphan ON slack_preferences(installation_id,user_id)
+                     WHERE project_id IS NULL''')
+        import slack_auth, slack_notify
+        slack_auth.init(c)
+        slack_notify.init(c)
 
 def create_type(c, project_id, name, is_base=False):
     # Historical metrics retain type IDs even after a type is deleted.
@@ -154,7 +176,11 @@ def metric_event(c, task_id, event, actor_id):
     timestamp=now()
     if event in ('completed','reopened'):
         c.execute('UPDATE tasks SET completed_at=? WHERE id=?',(timestamp if event=='completed' else None,task_id))
-    return metrics.metric_event(c,task_id,event,actor_id,lambda:timestamp)
+    result=metrics.metric_event(c,task_id,event,actor_id,lambda:timestamp)
+    if event=='completed':
+        import slack_notify
+        slack_notify.enqueue(c,'completion',task_id,actor_id)
+    return result
 
 def analytics(c, project_id, month, type_filter=None):
     return metrics.analytics(c,project_id,month,type_filter,STATS_ZONE)
@@ -180,6 +206,10 @@ def can_task(c,u,tid,write=False):
     return bool(task['parent_id'] and can_task(c,u,task['parent_id'],write))
 
 app = Flask(__name__, static_folder=None)
+import slack_auth
+app.config['SLACK_SETTINGS'] = SETTINGS['slack']
+app.config['SLACK_DB'] = db
+app.register_blueprint(slack_auth.blueprint)
 app.config['MAX_CONTENT_LENGTH'] = 100000
 if os.environ.get('FLUJO_BEHIND_PROXY') == '1':
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=0, x_port=0, x_prefix=0)
@@ -408,7 +438,11 @@ def automate(c,tid,events,uid,project=None):
     if project is None:
         row=c.execute('SELECT ty.project_id FROM tasks t JOIN task_types ty ON ty.id=t.type_id WHERE t.id=?',(tid,)).fetchone()
         project=row['project_id'] if row else None
-    g.disabled_automations.extend(automations.run(c,tid,project,events,uid,now,record,metric_event))
+    g.disabled_automations.extend(automations.run(c,tid,project,events,uid,now,record,metric_event,notify_assignment))
+
+def notify_assignment(c,tid,uid):
+    import slack_notify
+    slack_notify.enqueue(c,'assignment',tid,uid)
 
 def delete_task(c,tid,uid):
     task=c.execute('SELECT title,parent_id FROM tasks WHERE id=?',(tid,)).fetchone()
@@ -629,6 +663,8 @@ def post_tasks(c,u,path,b):
                 if not body: raise ValueError('Escribe un comentario')
                 if len(body)>10000: raise ValueError('El comentario es demasiado largo')
                 c.execute('INSERT INTO comments(task_id,user_id,body,created_at) VALUES(?,?,?,?)',(tid,u['id'],body,now()))
+                import slack_notify
+                slack_notify.enqueue(c,'comment',tid,u['id'])
             elif path=='/api/comments/update':
                 comment=c.execute('SELECT id,task_id,user_id,body FROM comments WHERE id=?',(int(b['id']),)).fetchone()
                 if not comment: return respond({'error':'Comentario no encontrado'},404)
@@ -670,6 +706,7 @@ def post_tasks(c,u,path,b):
                             if key=='description': c.execute('UPDATE tasks SET description=?,description_format=? WHERE id=?',(val,fmt,tid))
                             else: c.execute(f'UPDATE tasks SET {key}=? WHERE id=?',(val,tid))
                             record(c,tid,u['id'],f'actualizó {label}')
+                            if key=='assignee_id' and val: notify_assignment(c,tid,u['id'])
                             if key in ('assignee_id','priority','due_date'): events.append((key,old[key],val))
                 if events: automate(c,tid,events,u['id'])
                 task=c.execute('SELECT title,description,description_format,title_version,description_version FROM tasks WHERE id=?',(tid,)).fetchone()
