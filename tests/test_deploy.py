@@ -38,7 +38,7 @@ class DeploymentConfigTest(unittest.TestCase):
             (root / 'templates').mkdir()
             (root / 'templates' / 'index.html').touch()
             modules = ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py',
-                       'slack_notify.py', 'slack_auth.py', 'automations.py')
+                       'slack_notify.py', 'slack_auth.py', 'automations.py', 'mcp_server.py')
             for name in modules:
                 (root / name).touch()
             with patch.object(deploy, 'APP_DIR', root):
@@ -62,14 +62,15 @@ class DeploymentConfigTest(unittest.TestCase):
             root = Path(tmp).resolve(); config = root / 'flujo.conf'
             config.write_text('[program:flujo-app]\nuser=ubuntu\n')
             with patch.object(deploy, 'SUPERVISOR_FILE', config):
-                deploy.prepare_slack_supervisor('ubuntu')
+                deploy.prepare_worker_supervisor('ubuntu')
                 migrated = config.read_text()
-                deploy.prepare_slack_supervisor('ubuntu')
+                deploy.prepare_worker_supervisor('ubuntu')
                 self.assertEqual(config.read_text(), migrated)
                 self.assertIn('[program:flujo-app]\nuser=ubuntu', migrated)
+                self.assertIn('[program:flujo-mcp]', migrated)
                 config.write_text(migrated.replace('user=ubuntu\nenvironment=', 'user=other\nenvironment='))
                 with self.assertRaisesRegex(ValueError, 'otra configuración'):
-                    deploy.prepare_slack_supervisor('ubuntu')
+                    deploy.prepare_worker_supervisor('ubuntu')
 
     def test_worker_recovers_after_application_initializes_database(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -88,6 +89,7 @@ class DeploymentConfigTest(unittest.TestCase):
 
     def test_generated_templates_fill_all_values_and_preserve_nginx_variables(self):
         values = {'APP_DIR': '/srv/flujo', 'APP_USER': 'ubuntu', 'SOCKET_PATH': '/run/flujo/flujo.sock',
+                  'MCP_SOCKET_PATH': '/run/flujo/mcp.sock',
                   'CONFIG_PATH': '/srv/flujo/config.ini', 'NGINX_GROUP': 'www-data',
                   'SERVER_NAME': 'tareas.ejemplo.com'}
         supervisor = deploy.render('supervisor.conf.template', values)
@@ -100,9 +102,15 @@ class DeploymentConfigTest(unittest.TestCase):
         self.assertIn('[program:flujo-slack]', supervisor)
         self.assertIn('command=/srv/flujo/.venv/bin/python /srv/flujo/slack_notify.py', supervisor)
         self.assertIn('priority=200\nstartsecs=0', supervisor)
+        self.assertIn('[program:flujo-mcp]', supervisor)
+        self.assertIn('command=/srv/flujo/.venv/bin/python /srv/flujo/mcp_server.py', supervisor)
+        self.assertIn('priority=150\nstartsecs=3', supervisor)
         self.assertNotIn('TASKS_DB=', supervisor)
         self.assertIn('server_name tareas.ejemplo.com;', nginx)
         self.assertIn('proxy_pass http://unix:/run/flujo/flujo.sock;', nginx)
+        self.assertIn('location = /mcp {', nginx)
+        self.assertIn('proxy_pass http://unix:/run/flujo/mcp.sock;', nginx)
+        self.assertIn('proxy_buffering off;', nginx)
         self.assertIn('proxy_set_header Host $host;', nginx)
         self.assertIn('limit_req_zone $binary_remote_addr zone=flujo_login:10m rate=5r/m;', nginx)
         self.assertIn('location = /api/login {', nginx)
@@ -185,6 +193,7 @@ class DeploymentConfigTest(unittest.TestCase):
                 ['nginx', '-t'], ['supervisorctl', 'reread'], ['supervisorctl', 'update', 'flujo-app'],
                 ['supervisorctl', 'restart', 'flujo-app'], ['supervisorctl', 'status', 'flujo-app'],
                 ['supervisorctl', 'update', 'flujo-slack'], ['supervisorctl', 'status', 'flujo-slack'],
+                ['supervisorctl', 'update', 'flujo-mcp'], ['supervisorctl', 'status', 'flujo-mcp'],
                 ['systemctl', 'reload', 'nginx'],
             ])
 
@@ -330,12 +339,13 @@ class DeploymentConfigTest(unittest.TestCase):
                  patch.object(deploy, 'run') as run:
                 self.assertEqual(deploy.main(['update']),0)
             socket_check.assert_called_once_with(Path('/run/flujo/flujo.sock'),user,123)
-            nginx_check.assert_called_once_with(Path('/run/flujo/flujo.sock'))
+            nginx_check.assert_called_once_with(Path('/run/flujo/flujo.sock'), Path('/run/flujo/mcp.sock'))
             self.assertFalse(socket_dir.call_args.kwargs['install'])
             self.assertFalse(prepare.call_args.kwargs['create'])
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['supervisorctl','reread'], ['supervisorctl','restart','flujo-app'], ['supervisorctl','status','flujo-app'],
-                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack']])
+                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack'],
+                ['supervisorctl','update','flujo-mcp'], ['supervisorctl','status','flujo-mcp']])
 
     def test_update_starts_stopped_flujo(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -352,7 +362,8 @@ class DeploymentConfigTest(unittest.TestCase):
                 self.assertEqual(deploy.main(['update']),0)
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['supervisorctl','reread'], ['supervisorctl','start','flujo-app'], ['supervisorctl','status','flujo-app'],
-                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack']])
+                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack'],
+                ['supervisorctl','update','flujo-mcp'], ['supervisorctl','status','flujo-mcp']])
 
     def test_update_refuses_mismatched_nginx_socket(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,6 +375,28 @@ class DeploymentConfigTest(unittest.TestCase):
                 site.write_text('proxy_pass http://127.0.0.1:8000;')
                 with self.assertRaisesRegex(ValueError,'otro destino'):
                     deploy.check_nginx_socket('/run/flujo/flujo.sock')
+            site.write_text('proxy_pass http://unix:/run/flujo/flujo.sock;\nproxy_pass http://unix:/run/flujo/mcp.sock;\n')
+            with patch.object(deploy,'NGINX_FILE',site), patch('builtins.print'):
+                deploy.check_nginx_socket('/run/flujo/flujo.sock','/run/flujo/mcp.sock')
+            site.write_text('proxy_pass http://unix:/run/flujo/mcp.sock;\n')
+            with patch.object(deploy,'NGINX_FILE',site):
+                with self.assertRaisesRegex(ValueError,'otro destino'):
+                    deploy.check_nginx_socket('/run/flujo/flujo.sock','/run/flujo/mcp.sock')
+
+    def test_nginx_socket_update_rewrites_only_the_application_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            site=Path(tmp)/'flujo-app'
+            original=('server {\n proxy_pass http://unix:/run/flujo/old.sock;\n'
+                      ' location = /mcp {\n proxy_pass http://unix:/run/flujo/mcp.sock;\n }\n}\n')
+            site.write_text(original)
+            with patch.object(deploy,'NGINX_FILE',site):
+                before,after=deploy.plan_nginx_socket_update('/run/custom/new.sock','/run/custom/mcp.sock')
+                self.assertEqual(before,original)
+                self.assertIn('proxy_pass http://unix:/run/custom/new.sock;',after)
+                self.assertIn('proxy_pass http://unix:/run/custom/mcp.sock;',after)
+                # Con el mismo directorio el socket MCP no cambia.
+                site.write_text(original.replace('/run/flujo/old.sock','/run/custom/new.sock'))
+                self.assertIsNone(deploy.plan_nginx_socket_update('/run/custom/new.sock','/run/flujo/mcp.sock'))
 
     def test_old_supervisor_environment_requires_explicit_migration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,6 +417,7 @@ class DeploymentConfigTest(unittest.TestCase):
             nginx=(root/'generated/nginx.conf').read_text()
             supervisor=(root/'generated/supervisor.conf').read_text()
             self.assertIn('proxy_pass http://unix:/run/otra-app/custom.sock;',nginx)
+            self.assertIn('proxy_pass http://unix:/run/otra-app/mcp.sock;',nginx)
             self.assertIn(f'APP_CONFIG="{root}/config.ini"',supervisor)
             self.assertIn('d /run/otra-app 0750 ',(root/'generated/tmpfiles.conf').read_text())
             self.assertNotIn('flujo-app-static.conf',nginx)
@@ -397,13 +431,13 @@ class DeploymentConfigTest(unittest.TestCase):
             original='server {\n ssl_certificate /etc/letsencrypt/cert.pem;\n proxy_pass http://unix:/run/flujo/old.sock:;\n}\n'
             site.write_text(original)
             with patch.object(deploy,'NGINX_FILE',site):
-                before,after=deploy.plan_nginx_socket_update('/run/custom/new.sock')
+                before,after=deploy.plan_nginx_socket_update('/run/custom/new.sock','/run/custom/mcp.sock')
                 self.assertEqual(before,original)
                 self.assertIn('ssl_certificate /etc/letsencrypt/cert.pem;',after)
                 self.assertIn('proxy_pass http://unix:/run/custom/new.sock;',after)
                 site.write_text(original + 'proxy_pass http://127.0.0.1:9000;\n')
                 with self.assertRaisesRegex(ValueError,'varios destinos'):
-                    deploy.plan_nginx_socket_update('/run/custom/new.sock')
+                    deploy.plan_nginx_socket_update('/run/custom/new.sock','/run/custom/mcp.sock')
 
     def test_shared_socket_directory_permissions_are_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -476,7 +510,8 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertEqual([call.args[0] for call in run.call_args_list], [
                 ['supervisorctl','reread'], ['nginx','-t'], ['supervisorctl','restart','flujo-app'],
                 ['supervisorctl','status','flujo-app'], ['systemctl','reload','nginx'],
-                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack']])
+                ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack'],
+                ['supervisorctl','update','flujo-mcp'], ['supervisorctl','status','flujo-mcp']])
 
     def test_static_nginx_migration_keeps_ssl_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
