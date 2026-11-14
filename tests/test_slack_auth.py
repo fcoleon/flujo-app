@@ -122,14 +122,14 @@ class SlackAuthTest(unittest.TestCase):
             c.execute("INSERT INTO slack_accounts VALUES(1,1,'U1')")
             c.execute("INSERT INTO members VALUES(1,1,'viewer')")
             c.execute('UPDATE users SET admin=0 WHERE id=1')
-        summary = {'enabled': True, 'hour': 13, 'weekdays': [4, 0]}
+        summary = {'enabled': True, 'hour': 13, 'minute': 30, 'weekdays': [4, 0]}
         prefs = [{'project_id': 1, 'assignment': True, 'comment': False, 'completion': False},
                  {'project_id': None, 'assignment': False, 'comment': True, 'completion': False}]
         payload = {'preferences': prefs, 'summary': summary}
         self.assertEqual(self.client.post('/api/slack/preferences', json=payload).status_code, 200)
         status = self.client.get('/api/slack/status').json
         self.assertTrue(status['configured'])
-        self.assertEqual(status['summary'], {'enabled': True, 'hour': 13, 'weekdays': [0, 4]})
+        self.assertEqual(status['summary'], {'enabled': True, 'hour': 13, 'minute': 30, 'weekdays': [0, 4]})
         self.assertEqual(status['preferences'], prefs)
         with self.db() as c:
             self.assertEqual(c.execute('SELECT weekdays FROM slack_digest_settings').fetchone()[0], '[0, 4]')
@@ -159,7 +159,7 @@ class SlackAuthTest(unittest.TestCase):
         response = self.client.get('/api/slack/status')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json, {'configured': False, 'installation': None, 'account': None,
-                                       'preferences': [], 'summary': {'enabled': False, 'hour': 9, 'weekdays': list(range(7))}})
+                                       'preferences': [], 'summary': {'enabled': False, 'hour': 9, 'minute': 0, 'weekdays': list(range(7))}})
 
     def test_post_rejects_csrf_form_content_types(self):
         paths = ('install/start', 'link/start', 'preferences', 'test', 'unlink', 'disconnect')
