@@ -105,6 +105,8 @@ def check_writable(user, path, description):
 def supervisor_process_pid(program=PROGRAM):
     result = subprocess.run(['supervisorctl', 'pid', program], capture_output=True, text=True)
     output = (result.stdout + '\n' + result.stderr).strip()
+    if result.returncode == 7 and result.stdout.strip() == '0' and not result.stderr.strip():
+        return 0
     if result.returncode == 0 and output.isdigit():
         return int(output)
     if 'no such process' in output.lower():
