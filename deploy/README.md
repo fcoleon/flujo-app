@@ -34,7 +34,7 @@ sudo python3 deploy/deploy.py install --server-name tareas.ejemplo.com --user ub
 
 El script crea `.venv`, instala las dependencias, valida el socket, configura Supervisor y Nginx y arranca la aplicación. Si el directorio del socket no existe, el script lo crea con modo `0750` y configura `systemd-tmpfiles` para recrearlo al reiniciar; su directorio superior debe existir. Si ya existe y no fue creado por el script, conserva sus permisos y debes asegurar que cumpla esos requisitos y se mantenga disponible tras reiniciar. El acceso al socket se controla mediante ese directorio; el socket se crea con modo `0666`, accesible solo a quienes puedan atravesarlo. El grupo de Nginx es `www-data` por defecto; si usa otro grupo, indícalo con `--nginx-group GRUPO`. El script no cambia la membresía de los usuarios en los grupos.
 
-Supervisor también ejecuta `flujo-slack` con el mismo usuario, directorio, `APP_CONFIG` y `FLUJO_CONFIG_ONLY=1`. Gunicorn tiene prioridad de arranque 100 y el worker 200; el master de Gunicorn ejecuta `init()` antes de sus workers. La prioridad no garantiza que haya terminado la inicialización: si faltan tablas, el worker sale y Supervisor lo reinicia hasta que la base esté lista. Si la aplicación no arranca, corrige su error y revisa ambos procesos; los reinicios del worker pueden repetirse rápidamente.
+Supervisor también ejecuta `flujo-slack` con el mismo usuario, directorio, `APP_CONFIG` y `FLUJO_CONFIG_ONLY=1`, y `flujo-mcp`, que corre `mcp_server.py` con prioridad 150. Gunicorn tiene prioridad de arranque 100 y el worker 200; el master de Gunicorn ejecuta `init()` antes de sus workers. La prioridad no garantiza que haya terminado la inicialización: si faltan tablas, el worker sale y Supervisor lo reinicia hasta que la base esté lista. Si la aplicación no arranca, corrige su error y revisa los procesos; los reinicios del worker pueden repetirse rápidamente.
 
 Se comparte el Nginx existente; no se reemplazan otros sitios ni se actualizan otros procesos de Supervisor. Agrega `--dry-run` para generar los archivos sin instalarlos. Para conservar una configuración Nginx existente, usa `--skip-nginx` y configura manualmente su destino:
 
@@ -52,6 +52,8 @@ location ^~ /static/ {
 ```
 
 Reemplaza la ruta del ejemplo por la ubicación real. El usuario de Nginx debe poder atravesar todos los directorios superiores y leer los archivos de `static/`. Después ejecuta `sudo nginx -t && sudo systemctl reload nginx`. Mientras no se incluya, Flask seguirá entregando los archivos como alternativa.
+
+Para que ese Nginx enrute también el endpoint MCP, agrega el bloque `location = /mcp` de `deploy/nginx.conf.template` con `@@MCP_SOCKET_PATH@@` reemplazada por la ruta real: `mcp.sock` en el mismo directorio que el socket de la aplicación. Conserva `proxy_buffering off`. Sin ese bloque, `/mcp` responde 404.
 
 ### Límite de intentos de acceso
 
@@ -115,7 +117,7 @@ base_url = https://tareas.ejemplo.com
 
 Un administrador de Flujo inicia la instalación del workspace; cada usuario vincula su propia cuenta del mismo workspace. La desconexión individual elimina el vínculo; la desconexión administrativa elimina la instalación y vínculos locales. Se intenta revocar los tokens en Slack: si falla, la desconexión local permanece y el worker reintenta la revocación. Mientras haya revocaciones pendientes no se inician nuevas conexiones. Para retirar la aplicación del workspace, desinstálala también desde Slack. Solo se admite un workspace a la vez.
 
-Protege `config.ini` (por ejemplo `chmod 600 config.ini`, propiedad del usuario de la aplicación), la base SQLite, sus respaldos y el directorio: contienen credenciales o tokens. No publiques esos archivos ni sus secretos. Reinicia ambos procesos con `sudo python3 deploy/deploy.py update` tras cambiar la configuración.
+Protege `config.ini` (por ejemplo `chmod 600 config.ini`, propiedad del usuario de la aplicación), la base SQLite, sus respaldos y el directorio: contienen credenciales o tokens. No publiques esos archivos ni sus secretos. Reinicia los procesos con `sudo python3 deploy/deploy.py update` tras cambiar la configuración.
 
 La verificación de identidad Slack requiere `PyJWT[crypto]`. `install` y `update` instalan las dependencias de `requirements.txt` en `.venv`; en una instalación manual ejecuta `.venv/bin/python -m pip install -r requirements.txt` como el usuario de la aplicación.
 
@@ -162,12 +164,30 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Si Supervisor es de una versión anterior que guardaba la base y zona horaria en su configuración, copia primero esos valores a `config.ini`. La transición puede provocar una breve interrupción. Para volver al servidor anterior, restaura el código y las configuraciones respaldadas y reinicia Supervisor y Nginx.
 
+## MCP
+
+`flujo-mcp` ejecuta `mcp_server.py` con uvicorn sobre un socket Unix junto al de la aplicación (`mcp.sock` en el mismo directorio) y expone el endpoint `/mcp`, que Nginx enruta con el bloque `location = /mcp` de `deploy/nginx.conf.template`. Solo consulta: no escribe ni calcula estadísticas.
+
+Cada cliente se autentica con un token personal. Créalo desde tu perfil en la aplicación, en **Tokens de acceso (MCP)**, y guárdalo al momento de crearlo: solo se muestra una vez. Revócalo desde el mismo diálogo cuando dejes de usarlo. El token identifica a su usuario, así que las herramientas devuelven exactamente los proyectos y tareas que ese usuario puede ver, con las mismas reglas de permisos que la aplicación; un proyecto ajeno aparece como inexistente. Los tokens de cuentas bloqueadas o con contraseña temporal dejan de funcionar de inmediato.
+
+```sh
+curl -s https://tareas.ejemplo.com/mcp \
+  -H 'Authorization: Bearer flj_...' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Los clientes MCP remotos se configuran con esa URL, sin OAuth, y la cabecera `Authorization: Bearer` con el token (por ejemplo desde una variable de entorno). En instalaciones existentes, `update` agrega el programa a Supervisor y lo reinicia; revisa `sudo supervisorctl status flujo-mcp` y los logs de `/var/log/supervisor/flujo-mcp.*.log`.
+
 ## Estado
 
 ```sh
 sudo supervisorctl status flujo-app
 sudo supervisorctl status flujo-slack
+sudo supervisorctl status flujo-mcp
 sudo tail -f /var/log/supervisor/flujo-app.err.log
 sudo tail -f /var/log/supervisor/flujo-slack.err.log
+sudo tail -f /var/log/supervisor/flujo-mcp.err.log
 sudo nginx -t
 ```

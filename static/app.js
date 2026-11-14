@@ -670,7 +670,52 @@ function newTask(col){let p=data.projects.find(x=>x.id===active);formModal('Nuev
 function slackIcon(){return '<svg class="slack-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="9" width="9" height="4" rx="2" fill="#36C5F0"/><rect x="7" y="2" width="4" height="9" rx="2" fill="#36C5F0"/><rect x="11" y="2" width="4" height="9" rx="2" fill="#2EB67D"/><rect x="13" y="7" width="9" height="4" rx="2" fill="#2EB67D"/><rect x="13" y="11" width="9" height="4" rx="2" fill="#ECB22E"/><rect x="13" y="13" width="4" height="9" rx="2" fill="#ECB22E"/><rect x="9" y="13" width="4" height="9" rx="2" fill="#E01E5A"/><rect x="2" y="13" width="9" height="4" rx="2" fill="#E01E5A"/></svg>'}
 function editProfile(){
   formModal('Mi perfil',`<label>Nombre<input name="name" value="${esc(data.user.name)}" autocomplete="name" maxlength="120" required></label><p class="muted profile-password-note">Para cambiar tu contraseña, completa los siguientes campos.</p><label>Contraseña actual<input name="current_password" type="password" autocomplete="current-password"></label><label>Nueva contraseña<input name="new_password" type="password" minlength="8" autocomplete="new-password" placeholder="Mínimo 8 caracteres"></label><label>Confirmar nueva contraseña<input name="confirm_password" type="password" autocomplete="new-password"></label>`,async b=>{await api('profile',b);toast('Perfil actualizado')},'Versión: '+(data.version||'No disponible'))
-  $('#modal .dialog').insertAdjacentHTML('beforeend',`<div class="detail-section"><button type="button" class="outline slack-entry" onclick="slackSettings()">${slackIcon()} Notificaciones de Slack</button></div>`);
+  $('#modal .dialog').insertAdjacentHTML('beforeend',`<div class="detail-section"><div class="profile-entries"><button type="button" class="outline slack-entry" onclick="slackSettings()">${slackIcon()} Notificaciones de Slack</button><button type="button" class="outline slack-entry" onclick="mcpTokens()">Tokens de acceso (MCP)</button></div></div>`);
+}
+function mcpTokens(){
+  let dialog=document.createElement('dialog'),returnFocus=document.activeElement,previous=document.querySelector('#modal .overlay'),busy=false;
+  if(previous)previous.hidden=true;
+  dialog.className='dialog automations slack-dialog';dialog.setAttribute('aria-labelledby','mcpTokensTitle');
+  dialog.innerHTML='<div class="dialog-head"><h2 id="mcpTokensTitle">Tokens de acceso (MCP)</h2><button type="button" aria-label="Cerrar">×</button></div><p role="status">Cargando…</p>';
+  document.body.appendChild(dialog);dialog.showModal();
+  function close(){if(busy)return;dialog.close()}
+  dialog.querySelector('button').onclick=close;
+  dialog.addEventListener('cancel',e=>{e.preventDefault();close()});
+  dialog.addEventListener('close',()=>{dialog.remove();if(previous)previous.hidden=false;returnFocus?.focus()});
+  const when=value=>value?new Date(value).toLocaleString('es-CL',{dateStyle:'short',timeStyle:'short'}):'sin uso';
+  const item=t=>`<li${t.revoked_at?' class="revoked"':''}><div><strong>${esc(t.name)}</strong><small>Creado ${when(t.created_at)} · Último uso ${when(t.last_used_at)}</small></div>${t.revoked_at?'<span class="mcp-token-state">Revocado</span>':`<button type="button" class="outline" data-revoke="${t.id}">Revocar</button>`}</li>`;
+  async function load(){
+    try{
+      let {tokens}=await api('tokens');if(!dialog.isConnected)return;
+      dialog.innerHTML=`<div class="dialog-head"><h2 id="mcpTokensTitle">Tokens de acceso (MCP)</h2><button type="button" aria-label="Cerrar" data-action="close">×</button></div><p class="muted">Cada token da a un agente MCP el mismo acceso que tienes tú. Guárdalo al crearlo: solo se muestra una vez.</p><form id="mcpTokenForm"><label>Nombre del token<input name="name" required maxlength="60" placeholder="Ej. OpenCode en mi portátil"></label><div class="dialog-actions"><button class="primary" type="submit">Crear token</button></div></form><div class="mcp-token-created" hidden></div><ul class="mcp-token-list">${tokens.map(item).join('')||'<li class="muted">Aún no tienes tokens.</li>'}</ul>`;
+      dialog.querySelector('#mcpTokenForm').onsubmit=async e=>{
+        e.preventDefault();let form=e.target,button=form.querySelector('button[type=submit]');button.disabled=true;busy=true;
+        try{
+          let created=await api('tokens',Object.fromEntries(new FormData(form)));if(!dialog.isConnected)return;
+          form.reset();
+          let panel=dialog.querySelector('.mcp-token-created');panel.hidden=false;
+          panel.innerHTML=`<p><strong>Token «${esc(created.name)}» creado</strong></p><label class="mcp-token-value">Cópialo ahora: no volverás a verlo<input readonly value="${esc(created.token)}"></label><button type="button" class="outline" data-copy="${created.token}">Copiar token</button>`;
+          dialog.querySelector('.mcp-token-list').insertAdjacentHTML('afterbegin',item({id:created.id,name:created.name,created_at:new Date().toISOString(),last_used_at:null,revoked_at:null}));
+          let empty=dialog.querySelector('.mcp-token-list .muted');if(empty)empty.remove();
+        }catch(err){toast(err.message)}
+        finally{busy=false;button.disabled=false}
+      };
+    }catch(err){if(dialog.isConnected)dialog.querySelector('[role=status]').textContent=err.message}
+  }
+  dialog.addEventListener('click',async e=>{
+    let copy=e.target.closest('[data-copy]')?.dataset.copy;
+    if(copy){try{await navigator.clipboard.writeText(copy);toast('Token copiado')}catch(err){toast(err.message)}return}
+    let revoke=e.target.closest('[data-revoke]')?.dataset.revoke;
+    if(revoke){
+      if(!confirm('¿Revocar este token? El agente que lo use dejará de tener acceso.'))return;
+      let button=e.target.closest('button');button.disabled=true;
+      try{await api('tokens/revoke',{id:Number(revoke)});let li=button.closest('li');li.classList.add('revoked');button.outerHTML='<span class="mcp-token-state">Revocado</span>'}
+      catch(err){button.disabled=false;toast(err.message)}
+      return;
+    }
+    if(e.target.closest('[data-action=close]'))close();
+  });
+  load();
 }
 function showBlocked(){data=null;active=null;closeModal(true);$('#app').innerHTML=`<div class="blocked-screen"><div class="blocked-card"><div class="brand"><span class="brandmark">✳</span> flujo<span class="brand-dot">.</span></div><h1>Acceso bloqueado</h1><p>Has sido bloqueado de este workspace, contacta a tu admin para más información.</p><button class="outline" onclick="logout()">Cerrar sesión</button></div></div>`}
 function workspaceSettings(){

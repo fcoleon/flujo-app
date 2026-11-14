@@ -23,6 +23,7 @@ from settings import load_settings
 
 PROGRAM = 'flujo-app'
 SLACK_PROGRAM = 'flujo-slack'
+MCP_PROGRAM = 'flujo-mcp'
 SUPERVISOR_FILE = Path('/etc/supervisor/conf.d/flujo-app.conf')
 NGINX_FILE = Path('/etc/nginx/sites-available/flujo-app')
 NGINX_LINK = Path('/etc/nginx/sites-enabled/flujo-app')
@@ -270,7 +271,7 @@ def installed_socket_group(user, socket_path=None, requested_group=None):
 
 
 def prepare_venv(user, db_path, timezone, create=True):
-    modules = [APP_DIR / name for name in ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py', 'slack_notify.py', 'slack_auth.py', 'automations.py')]
+    modules = [APP_DIR / name for name in ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py', 'slack_notify.py', 'slack_auth.py', 'automations.py', 'mcp_server.py')]
     if not all(path.is_file() for path in (*modules, APP_DIR / 'templates' / 'index.html')):
         fail(f'No se encontró la aplicación completa en {APP_DIR}. Copia sus archivos antes de continuar.')
     for path in (APP_DIR, *modules, APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'style.css', 'favicon.svg'))):
@@ -324,7 +325,7 @@ def installed_supervisor_settings():
     return section['user']
 
 
-def check_nginx_socket(socket_path):
+def check_nginx_socket(socket_path, mcp_socket_path=None):
     if not NGINX_FILE.is_file():
         print('Aviso: verifica que tu proxy Nginx apunte al socket configurado.', flush=True)
         return
@@ -332,13 +333,17 @@ def check_nginx_socket(socket_path):
     upstreams = set(re.findall(r'proxy_pass\s+(http://(?:127\.0\.0\.1:\d+/?|unix:[^;\s]+))\s*;', text))
     upstreams = {upstream.removesuffix(':') for upstream in upstreams}
     expected = f'http://unix:{socket_path}'
-    if upstreams and upstreams != {expected}:
+    allowed = {expected}
+    if mcp_socket_path: allowed.add(f'http://unix:{mcp_socket_path}')
+    if upstreams and (expected not in upstreams or not upstreams <= allowed):
         fail('Nginx apunta a otro destino. Actualiza proxy_pass al socket de config.ini antes de continuar.')
     if not upstreams:
         print('Aviso: verifica manualmente que Nginx apunte al socket configurado.', flush=True)
+    elif f'http://unix:{mcp_socket_path}' not in upstreams:
+        print('Aviso: Nginx no enruta /mcp; agrega el location de deploy/nginx.conf.template.', flush=True)
 
 
-def plan_nginx_socket_update(socket_path):
+def plan_nginx_socket_update(socket_path, mcp_socket_path=None):
     if not NGINX_FILE.is_file():
         print('Aviso: verifica manualmente que Nginx apunte al socket configurado.', flush=True)
         return None
@@ -350,13 +355,20 @@ def plan_nginx_socket_update(socket_path):
     if not matches:
         print('Aviso: verifica manualmente que Nginx apunte al socket configurado.', flush=True)
         return None
-    upstreams = {m.group(2).removesuffix(':') for m in matches}
-    if len(upstreams) != 1 or not re.fullmatch(r'http://(?:127\.0\.0\.1:\d+/?|unix:[^;\s]+)', next(iter(upstreams))):
+    # El destino MCP se reconoce por su nombre; el resto son destinos de la aplicación.
+    is_mcp = lambda value: value.removesuffix(':').endswith('/mcp.sock')
+    app_upstreams = {m.group(2).removesuffix(':') for m in matches if not is_mcp(m.group(2))}
+    if len(app_upstreams) != 1 or not re.fullmatch(r'http://(?:127\.0\.0\.1:\d+/?|unix:[^;\s]+)', next(iter(app_upstreams))):
         fail('El sitio tiene varios destinos o un destino personalizado; actualiza proxy_pass manualmente.')
     expected = f'http://unix:{socket_path}'
-    if upstreams == {expected}: return None
-    updated = pattern.sub(lambda m: m.group(1) + expected + m.group(3), original)
-    return original, updated
+    def replace(match):
+        if is_mcp(match.group(2)):
+            target = f'http://unix:{mcp_socket_path}' if mcp_socket_path else match.group(2)
+        else:
+            target = expected
+        return match.group(1) + target + match.group(3)
+    updated = pattern.sub(replace, original)
+    return (original, updated) if updated != original else None
 
 
 def write_atomic(path, content):
@@ -416,6 +428,14 @@ def plan_nginx_static_update(change):
     return (original,updated) if updated!=original else None
 
 
+def supervisor_start_worker(program):
+    """Aplica la configuración de un programa auxiliar y lo deja en ejecución."""
+    run(['supervisorctl', 'update', program])
+    if supervisor_process_pid(program) == 0:
+        run(['supervisorctl', 'start', program])
+    run(['supervisorctl', 'status', program])
+
+
 def apply_config(supervisor_config, nginx_config, skip_nginx):
     if os.geteuid() != 0:
         fail('Para instalar la configuración usa sudo.')
@@ -463,22 +483,24 @@ def apply_config(supervisor_config, nginx_config, skip_nginx):
     run(['supervisorctl', 'update', PROGRAM])
     run(['supervisorctl', 'restart', PROGRAM])
     run(['supervisorctl', 'status', PROGRAM])
-    run(['supervisorctl', 'update', SLACK_PROGRAM])
-    if supervisor_process_pid(SLACK_PROGRAM) == 0:
-        run(['supervisorctl', 'start', SLACK_PROGRAM])
-    run(['supervisorctl', 'status', SLACK_PROGRAM])
+    for program in (SLACK_PROGRAM, MCP_PROGRAM):
+        supervisor_start_worker(program)
     if not skip_nginx:
         run(['systemctl', 'reload', 'nginx'])
 
 
-def prepare_slack_supervisor(user):
+def prepare_worker_supervisor(user):
+    """Añade los programas auxiliares que falten, sin tocar los ya registrados."""
     path = supervisor_config_path()
     text = path.read_text(encoding='utf-8')
     config = configparser.RawConfigParser(interpolation=None)
     config.read_string(text)
     expected = render('supervisor.conf.template', {'APP_DIR': APP_DIR, 'APP_USER': user,
                       'CONFIG_PATH': APP_DIR / 'config.ini'})
-    worker = expected[expected.index('[program:flujo-slack]'):]
+    slack_start = expected.index('[program:' + SLACK_PROGRAM + ']')
+    mcp_start = expected.index('[program:' + MCP_PROGRAM + ']')
+    workers = {SLACK_PROGRAM: (expected[slack_start:mcp_start], f'{APP_DIR}/.venv/bin/python {APP_DIR}/slack_notify.py'),
+               MCP_PROGRAM: (expected[mcp_start:], f'{APP_DIR}/.venv/bin/python {APP_DIR}/mcp_server.py')}
     for other in path.parent.glob('*.conf'):
         if other == path or other.is_symlink() or not other.is_file():
             continue
@@ -487,19 +509,24 @@ def prepare_slack_supervisor(user):
             candidate.read_string(other.read_text(encoding='utf-8'))
         except (configparser.Error, UnicodeError):
             continue
-        if candidate.has_section('program:' + SLACK_PROGRAM):
-            fail(f'{SLACK_PROGRAM} ya está configurado en {other}; revísalo antes de continuar.')
-    if config.has_section('program:' + SLACK_PROGRAM):
-        section = config['program:' + SLACK_PROGRAM]
-        if (section.get('directory') != str(APP_DIR) or section.get('user') != user or
-            section.get('command') != f'{APP_DIR}/.venv/bin/python {APP_DIR}/slack_notify.py' or
-            f'APP_CONFIG="{APP_DIR}/config.ini"' not in section.get('environment', '') or
-            'FLUJO_CONFIG_ONLY="1"' not in section.get('environment', '')):
-            fail(f'{SLACK_PROGRAM} tiene otra configuración; revísala antes de continuar.')
-    else:
-        if supervisor_process_pid(SLACK_PROGRAM) is not None:
-            fail('Supervisor ya tiene registrado flujo-slack sin configuración verificada.')
-        write_atomic(path, text.rstrip() + '\n\n' + worker)
+        for name in workers:
+            if candidate.has_section('program:' + name):
+                fail(f'{name} ya está configurado en {other}; revísalo antes de continuar.')
+    additions = []
+    for name, (block, command) in workers.items():
+        if config.has_section('program:' + name):
+            section = config['program:' + name]
+            if (section.get('directory') != str(APP_DIR) or section.get('user') != user or
+                section.get('command') != command or
+                f'APP_CONFIG="{APP_DIR}/config.ini"' not in section.get('environment', '') or
+                'FLUJO_CONFIG_ONLY="1"' not in section.get('environment', '')):
+                fail(f'{name} tiene otra configuración; revísala antes de continuar.')
+        else:
+            if supervisor_process_pid(name) is not None:
+                fail(f'Supervisor ya tiene registrado {name} sin configuración verificada.')
+            additions.append(block.strip())
+    if additions:
+        write_atomic(path, text.rstrip() + '\n\n' + '\n\n'.join(additions))
     return path
 
 
@@ -525,6 +552,9 @@ def main(argv=None):
     config_file = check_path(config_path, 'La ruta de configuración')
     db_path = Path(settings['database'])
     socket_path = validate_socket_path(settings['socket'])
+    mcp_socket_path = socket_path.with_name('mcp.sock')
+    if mcp_socket_path == socket_path:
+        fail('El socket de la aplicación no puede llamarse mcp.sock.')
     if args.mode == 'install':
         if not SAFE_USER.fullmatch(args.user) or args.user == 'root':
             fail('Indica un usuario Linux sin privilegios con --user.')
@@ -532,7 +562,8 @@ def main(argv=None):
         except KeyError: fail(f'No existe el usuario Linux {args.user}.')
         if not SAFE_USER.fullmatch(args.nginx_group): fail('Grupo de Nginx inválido.')
         rule = f'd {socket_path.parent} 0750 {args.user} {args.nginx_group} -' if not socket_path.parent.exists() else ''
-        values = {'APP_DIR': app_dir, 'APP_USER': args.user, 'SOCKET_PATH': socket_path, 'CONFIG_PATH': config_file, 'NGINX_GROUP': args.nginx_group, 'SOCKET_DIRECTORY_RULE': rule}
+        values = {'APP_DIR': app_dir, 'APP_USER': args.user, 'SOCKET_PATH': socket_path, 'MCP_SOCKET_PATH': mcp_socket_path,
+                  'CONFIG_PATH': config_file, 'NGINX_GROUP': args.nginx_group, 'SOCKET_DIRECTORY_RULE': rule}
         supervisor_config = render('supervisor.conf.template', values)
         tmpfiles_config = render('tmpfiles.conf.template', values)
         nginx_config = ''
@@ -565,9 +596,9 @@ def main(argv=None):
     try: grp.getgrnam(group)
     except KeyError: fail(f'No existe el grupo de Nginx {group}.')
     check_socket(socket_path,user,own_pid)
-    nginx_update = plan_nginx_socket_update(socket_path) if args.mode == 'update' else None
+    nginx_update = plan_nginx_socket_update(socket_path, mcp_socket_path) if args.mode == 'update' else None
     if args.mode == 'update': nginx_update = plan_nginx_static_update(nginx_update)
-    if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path)
+    if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path, mcp_socket_path)
     if args.mode == 'update' or args.skip_nginx:
         print('Aviso: verifica el límite de acceso a /api/login en Nginx; consulta deploy/README.md.', flush=True)
     prepare_venv(user, db_path, settings['timezone'], create=args.mode == 'install')
@@ -578,12 +609,13 @@ def main(argv=None):
             print(f'Aviso: asegura que {socket_path.parent} se recree al reiniciar el servidor.',flush=True)
     config_exists = supervisor_config_path().exists()
     if config_exists:
-        prepare_slack_supervisor(user)
-    slack_pid = supervisor_process_pid(SLACK_PROGRAM)
-    if slack_pid is not None and not config_exists:
-        fail('Supervisor ya tiene registrado flujo-slack sin configuración verificada.')
-    if slack_pid:
-        run(['supervisorctl', 'stop', SLACK_PROGRAM])
+        prepare_worker_supervisor(user)
+    for program in (SLACK_PROGRAM, MCP_PROGRAM):
+        pid = supervisor_process_pid(program)
+        if pid is not None and not config_exists:
+            fail(f'Supervisor ya tiene registrado {program} sin configuración verificada.')
+        if pid:
+            run(['supervisorctl', 'stop', program])
     if args.mode == 'install':
         apply_config(supervisor_config, nginx_config, args.skip_nginx)
     else:
@@ -602,10 +634,8 @@ def main(argv=None):
         else:
             run(['supervisorctl', 'start' if own_pid == 0 else 'restart', PROGRAM])
             run(['supervisorctl', 'status', PROGRAM])
-        run(['supervisorctl', 'update', SLACK_PROGRAM])
-        if supervisor_process_pid(SLACK_PROGRAM) == 0:
-            run(['supervisorctl', 'start', SLACK_PROGRAM])
-        run(['supervisorctl', 'status', SLACK_PROGRAM])
+        for program in (SLACK_PROGRAM, MCP_PROGRAM):
+            supervisor_start_worker(program)
     print('Flujo está en ejecución.')
     return 0
 
