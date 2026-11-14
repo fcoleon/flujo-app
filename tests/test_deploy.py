@@ -32,6 +32,19 @@ class DeploymentConfigTest(unittest.TestCase):
             self.assertEqual(0o777 & ~gunicorn['umask'], 0o666)
             self.assertNotIn('when_ready', gunicorn)
 
+    def test_supervisor_pid_distinguishes_stopped_missing_and_errors(self):
+        self.pid_patch.stop()
+        with patch.object(deploy.subprocess, 'run') as run:
+            for code, stdout, expected in ((0, '123\n', 123), (0, '0\n', 0),
+                                           (7, '0\n', 0), (1, 'No such process flujo-slack\n', None)):
+                run.return_value = subprocess.CompletedProcess([], code, stdout, '')
+                self.assertEqual(deploy.supervisor_process_pid('flujo-slack'), expected)
+            for code, stdout, stderr in ((1, '0\n', ''), (7, '0\n', 'error'),
+                                         (1, '', 'connection refused')):
+                run.return_value = subprocess.CompletedProcess([], code, stdout, stderr)
+                with self.assertRaisesRegex(ValueError, 'No se pudo consultar Supervisor'):
+                    deploy.supervisor_process_pid('flujo-slack')
+
     def test_prepare_venv_checks_required_modules_exist_and_are_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
