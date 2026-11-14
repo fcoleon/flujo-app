@@ -48,6 +48,25 @@ class TaskTypesTest(unittest.TestCase):
         response=self.client_for(user).get('/api/'+path)
         return response.status_code,response.get_json()
 
+    def test_status_history_and_existing_task_migration(self):
+        task=self.post('tasks',{'title':'Tarea','project_id':1,'column_id':1})[1]['id']
+        with app.db() as c:
+            row=c.execute('SELECT type_id,status_id FROM tasks WHERE id=?',(task,)).fetchone()
+            typ,initial=row['type_id'],row['status_id']
+            done=c.execute('SELECT id FROM task_statuses WHERE type_id=? AND is_done=1',(typ,)).fetchone()['id']
+        self.assertEqual(self.post('task/type-status',{'id':task,'type_id':typ,'status_id':done})[0],200)
+        history=self.get(f'history/{task}')[1]
+        self.assertEqual([h['status_id'] for h in reversed(history) if h['status_id']], [initial,done])
+        with app.db() as c:
+            c.execute('UPDATE history SET status_id=NULL,status_name=NULL,type_id=NULL,type_name=NULL WHERE task_id=?',(task,))
+            c.execute("DELETE FROM app_meta WHERE key='status_history_started_at'")
+        app.init()
+        app.init()
+        history=self.get(f'history/{task}')[1]
+        baseline=[h for h in history if h['status_id']]
+        self.assertEqual(len(baseline),1)
+        self.assertEqual((baseline[0]['status_id'],baseline[0]['actor']),(done,'Sistema'))
+
     def test_edit_comment_requires_author_and_task_edit_permission(self):
         task=self.post('tasks',{'title':'Tarea','project_id':1,'column_id':1})[1]['id']
         self.assertEqual(self.post('comments',{'task_id':task,'body':'Original'},user=2)[0],200)

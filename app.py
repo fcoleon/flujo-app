@@ -102,6 +102,18 @@ def init():
             apply_project_base(c,task['id'],task['project_id'])
         c.execute('CREATE TABLE IF NOT EXISTS app_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         c.execute("INSERT OR IGNORE INTO app_meta(key,value) VALUES('workspace_name','Mi workspace')")
+        history_columns={row['name'] for row in c.execute('PRAGMA table_info(history)')}
+        for name,definition in [('status_id','INTEGER'),('status_name','TEXT'),('type_id','INTEGER'),('type_name','TEXT'),('status_is_done','INTEGER')]:
+            if name not in history_columns: c.execute(f'ALTER TABLE history ADD COLUMN {name} {definition}')
+        c.execute('''UPDATE history SET status_is_done=(SELECT is_done FROM task_statuses WHERE id=history.status_id)
+                     WHERE status_id IS NOT NULL AND status_is_done IS NULL''')
+        if not c.execute("SELECT 1 FROM app_meta WHERE key='status_history_started_at'").fetchone():
+            started=now()
+            c.execute('''INSERT INTO history(task_id,user_id,message,created_at,status_id,status_name,type_id,type_name,status_is_done)
+                         SELECT t.id,NULL,'inicio del registro de tiempo por estado',?,s.id,s.name,ty.id,ty.name,s.is_done
+                         FROM tasks t JOIN task_statuses s ON s.id=t.status_id JOIN task_types ty ON ty.id=t.type_id''',(started,))
+            c.execute("INSERT INTO app_meta(key,value) VALUES('status_history_started_at',?)",(started,))
+        c.execute('CREATE INDEX IF NOT EXISTS history_task_status ON history(task_id,created_at,id) WHERE status_id IS NOT NULL')
         c.execute('CREATE TABLE IF NOT EXISTS metric_events(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, task_id INTEGER NOT NULL, event TEXT NOT NULL, occurred_at TEXT NOT NULL, task_created_at TEXT NOT NULL, type_id INTEGER NOT NULL, type_name TEXT NOT NULL)')
         metric_columns={row['name'] for row in c.execute('PRAGMA table_info(metric_events)')}
         for name,definition in [('actor_id','INTEGER'),('actor_name','TEXT'),('assignee_id','INTEGER'),('assignee_name','TEXT'),('identity_recorded','INTEGER NOT NULL DEFAULT 0')]:
@@ -208,7 +220,12 @@ def analytics(c, project_id, month, type_filter=None):
     return metrics.analytics(c,project_id,month,type_filter,STATS_ZONE)
 
 def now(): return datetime.now(timezone.utc).isoformat()
-def record(c,tid,uid,msg): c.execute('INSERT INTO history(task_id,user_id,message,created_at) VALUES(?,?,?,?)',(tid,uid,msg,now()))
+def record(c,tid,uid,msg,status=False):
+    if status:
+        c.execute('''INSERT INTO history(task_id,user_id,message,created_at,status_id,status_name,type_id,type_name,status_is_done)
+                     SELECT t.id,?,?,?,s.id,s.name,ty.id,ty.name,s.is_done FROM tasks t
+                     JOIN task_statuses s ON s.id=t.status_id JOIN task_types ty ON ty.id=t.type_id WHERE t.id=?''',(uid,msg,now(),tid))
+    else: c.execute('INSERT INTO history(task_id,user_id,message,created_at) VALUES(?,?,?,?)',(tid,uid,msg,now()))
 def role(c,u,p):
     if u['admin']: return 'admin'
     r=c.execute('SELECT role FROM members WHERE project_id=? AND user_id=?',(p,u['id'])).fetchone(); return r['role'] if r else None
@@ -324,7 +341,10 @@ def api_get():
                     placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
                     if can_task(c,u,t['id']):
                         projects_for_task=task_projects(c,t['id']); explicit={r['project_id'] for r in c.execute('SELECT project_id FROM placements WHERE task_id=?',(t['id'],))}
-                        d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None; tasks.append(d)
+                        d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None
+                        status_entry=c.execute('SELECT created_at,message FROM history WHERE task_id=? AND status_id IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1',(t['id'],)).fetchone()
+                        d['status_since']=status_entry['created_at'] if status_entry else None; d['status_since_partial']=bool(status_entry and status_entry['message']=='inicio del registro de tiempo por estado')
+                        d['status_previous_seconds'],d['status_total_partial']=metrics.previous_status_time(c,t['id'],t['status_id']); tasks.append(d)
                 return respond({'user':dict(u),'version':VERSION,'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
             if path=='/api/analytics':
                 params=request.args.to_dict(flat=False); p=int(params['project_id'][0]); month=params['month'][0]
@@ -349,7 +369,7 @@ def api_get():
             if path.startswith('/api/history/'):
                 tid=int(path.split('/')[-1])
                 if not can_task(c,u,tid): return respond({'error':'Sin acceso'},403)
-                return respond([dict(x) for x in c.execute('SELECT h.*,COALESCE(u.name,"Usuario eliminado") AS actor FROM history h LEFT JOIN users u ON u.id=h.user_id WHERE task_id=? ORDER BY h.id DESC',(tid,))])
+                return respond([dict(x) for x in c.execute('''SELECT h.*,CASE WHEN h.user_id IS NULL AND h.message='inicio del registro de tiempo por estado' THEN 'Sistema' ELSE COALESCE(u.name,'Usuario eliminado') END AS actor FROM history h LEFT JOIN users u ON u.id=h.user_id WHERE task_id=? ORDER BY h.id DESC''',(tid,))])
             return respond({'error':'No encontrado'},404)
     except PermissionError as e: return respond({'error':str(e)},403)
     except (ValueError, KeyError, sqlite3.IntegrityError) as e: return respond({'error':str(e)},400)
@@ -627,7 +647,7 @@ def post_task_types(c,u,path,b):
                 if not selected or selected['project_id'] != p: raise ValueError('Tipo de tarea inválido para este proyecto')
                 tid=c.execute('INSERT INTO tasks(title,created_at,parent_id,type_id,status_id,public_id) VALUES(?,?,?,?,?,?)',(title,now(),parent,type_id,default_status(c,type_id),str(uuid.uuid4()))).lastrowid
                 if p: c.execute('INSERT INTO placements VALUES(?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM placements WHERE column_id=?))',(tid,p,col,col))
-                record(c,tid,u['id'],'creó la tarea')
+                record(c,tid,u['id'],'creó la tarea',True)
                 metric_event(c,tid,'created',u['id'])
                 if parent: record(c,parent,u['id'],'agregó la subtarea '+title)
                 if p: automate(c,tid,[('created',None,None)],u['id'],p)
@@ -658,7 +678,9 @@ def post_task_types(c,u,path,b):
                 if not any(not bool(x.get('is_done')) for x in statuses) or not any(bool(x.get('is_done')) for x in statuses): raise ValueError('Incluye al menos un estado en curso y uno finalizado')
                 for status_id in deleted:
                     if c.execute('SELECT 1 FROM tasks WHERE status_id=? LIMIT 1',(status_id,)).fetchone(): raise ValueError('Hay tareas con un estado que intentas eliminar. Cambia su estado antes de eliminarlo, incluso si están en otro tablero o sin proyecto')
-                for status_id in deleted: c.execute('DELETE FROM task_statuses WHERE id=? AND type_id=?',(status_id,type_id))
+                for status_id in deleted:
+                    c.execute('UPDATE history SET status_is_done=? WHERE status_id=?',(existing[status_id]['is_done'],status_id))
+                    c.execute('DELETE FROM task_statuses WHERE id=? AND type_id=?',(status_id,type_id))
                 for i,st in enumerate(statuses):
                     label=str(st.get('name','')).strip(); color=str(st.get('color',''))
                     if not label or len(label)>100 or not re.fullmatch(r'#[0-9a-fA-F]{6}',color): raise ValueError('Nombre o color del estado inválido')
@@ -683,13 +705,13 @@ def post_task_types(c,u,path,b):
                     status_id=default_status(c,type_id)
                     c.execute('UPDATE tasks SET type_id=?,status_id=? WHERE id=?',(type_id,status_id,tid))
                     if old_done: metric_event(c,tid,'reopened',u['id'])
-                    record(c,tid,u['id'],'cambió el tipo a '+typ['name']+' y reinició el estado')
+                    record(c,tid,u['id'],'cambió el tipo a '+typ['name']+' y reinició el estado',True)
                 else:
                     status=c.execute('SELECT * FROM task_statuses WHERE id=? AND type_id=?',(status_id,type_id)).fetchone()
                     if not status: raise ValueError('Estado inválido para el tipo')
                     if status_id!=task['status_id']:
                         old_done=c.execute('SELECT is_done FROM task_statuses WHERE id=?',(task['status_id'],)).fetchone()['is_done']
-                        c.execute('UPDATE tasks SET status_id=? WHERE id=?',(status_id,tid)); record(c,tid,u['id'],'cambió el estado a '+status['name'])
+                        c.execute('UPDATE tasks SET status_id=? WHERE id=?',(status_id,tid)); record(c,tid,u['id'],'cambió el estado a '+status['name'],True)
                         if bool(old_done)!=bool(status['is_done']): metric_event(c,tid,'completed' if status['is_done'] else 'reopened',u['id'])
                 new_status=c.execute('SELECT status_id FROM tasks WHERE id=?',(tid,)).fetchone()['status_id']
                 if new_status!=task['status_id']: automate(c,tid,[('status',task['status_id'],new_status)],u['id'])
@@ -772,8 +794,8 @@ def post_tasks(c,u,path,b):
                     col=c.execute('SELECT id FROM columns WHERE project_id=? ORDER BY position LIMIT 1',(p,)).fetchone()
                     if not col: raise ValueError('El proyecto no tiene columnas')
                     c.execute('INSERT INTO placements VALUES(?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM placements WHERE column_id=?))',(tid,p,col['id'],col['id']))
-                    apply_project_base(c,tid,p)
-                    record(c,tid,u['id'],'agregó la tarea a un proyecto')
+                    changed=apply_project_base(c,tid,p)
+                    record(c,tid,u['id'],'agregó la tarea a un proyecto',changed)
 
 if __name__=='__main__':
     init(); app.run(host='127.0.0.1',port=PORT,debug=False,threaded=True)
