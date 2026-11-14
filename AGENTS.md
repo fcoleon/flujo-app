@@ -3,6 +3,7 @@
 ## Mapa
 
 - `app.py`: rutas Flask, permisos, conexión SQLite y `init()` (esquema y migraciones).
+- `mcp_server.py`: servidor MCP de solo lectura; expone `/mcp` con uvicorn sobre un socket Unix junto al de la aplicación y aplica los permisos del usuario dueño de cada token (`mcp_tokens`).
 - `auth.py`: contraseñas y sesiones; `analytics.py`: eventos y estadísticas; `descriptions.py`: saneamiento de HTML; `settings.py`: configuración compartida.
 - `templates/index.html` y `static/`: interfaz; `tests/`: pruebas `unittest`; `deploy/`: Gunicorn, Supervisor, Nginx y despliegue.
 

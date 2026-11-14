@@ -35,3 +35,22 @@ stdout_logfile_maxbytes=10MB
 stderr_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 stderr_logfile_backups=3
+
+[program:flujo-mcp]
+directory=@@APP_DIR@@
+command=@@APP_DIR@@/.venv/bin/python @@APP_DIR@@/mcp_server.py
+user=@@APP_USER@@
+environment=APP_CONFIG="@@CONFIG_PATH@@",FLUJO_CONFIG_ONLY="1",PYTHONUNBUFFERED="1"
+autostart=true
+autorestart=true
+priority=150
+startsecs=3
+stopsignal=TERM
+stopasgroup=true
+killasgroup=true
+stdout_logfile=/var/log/supervisor/flujo-mcp.out.log
+stderr_logfile=/var/log/supervisor/flujo-mcp.err.log
+stdout_logfile_maxbytes=10MB
+stderr_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+stderr_logfile_backups=3

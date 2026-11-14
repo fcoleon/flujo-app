@@ -35,6 +35,24 @@ def db():
     c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     c.execute('PRAGMA foreign_keys=ON'); return c
 
+def mcp_token_hash(token): return hashlib.sha256(token.encode()).hexdigest()
+
+def mcp_tokens(c,uid):
+    return [dict(r) for r in c.execute('SELECT id,name,created_at,last_used_at,revoked_at FROM mcp_tokens WHERE user_id=? ORDER BY id DESC',(uid,))]
+
+def mcp_token_user(c,token):
+    """Resuelve un token Bearer de un agente MCP a su usuario. Devuelve (usuario, motivo_de_rechazo)."""
+    digest=mcp_token_hash(token)
+    row=c.execute('''SELECT u.id,u.name,u.username,u.admin,u.blocked,u.must_change_password
+                     FROM mcp_tokens t JOIN users u ON u.id=t.user_id
+                     WHERE t.token_hash=? AND t.revoked_at IS NULL''',(digest,)).fetchone()
+    if not row: return None,'invalid'
+    c.execute('UPDATE mcp_tokens SET last_used_at=? WHERE token_hash=?',(now(),digest))
+    u={'id':row['id'],'name':row['name'],'username':row['username'],'admin':row['admin']}
+    if row['blocked']: return u,'blocked'
+    if row['must_change_password']: return u,'password'
+    return u,None
+
 def init():
     with db() as c:
         c.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, salt TEXT NOT NULL, admin INTEGER NOT NULL DEFAULT 0);
@@ -133,6 +151,10 @@ def init():
                      WHERE project_id IS NOT NULL''')
         c.execute('''CREATE UNIQUE INDEX IF NOT EXISTS slack_preferences_orphan ON slack_preferences(installation_id,user_id)
                      WHERE project_id IS NULL''')
+        c.execute('''CREATE TABLE IF NOT EXISTS mcp_tokens(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+                     created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT)''')
         import slack_auth, slack_notify
         slack_auth.init(c)
         slack_notify.init(c)
@@ -284,6 +306,7 @@ def api_get():
             if blocked: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
             if must_change: return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
             if path=='/api/revision': return respond({'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0]})
+            if path=='/api/tokens': return respond({'tokens':mcp_tokens(c,u['id'])})
             if path=='/api/data':
                 projects=[]
                 for p in c.execute('SELECT * FROM projects ORDER BY id').fetchall():
@@ -382,7 +405,7 @@ def api_post():
             if flags['must_change_password']:
                 return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
             g.disabled_automations=[]
-            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete'):
+            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete','/api/tokens','/api/tokens/revoke'):
                 c.execute('BEGIN IMMEDIATE')
             if path in ('/api/workspace/update','/api/workspace/block','/api/profile','/api/users'):
                 result=post_workspace(c,u,path,b)
@@ -394,6 +417,8 @@ def api_post():
                 result=post_tasks(c,u,path,b)
             elif path in ('/api/automations/save','/api/automations/delete','/api/automations/reorder'):
                 result=post_automations(c,u,path,b)
+            elif path in ('/api/tokens','/api/tokens/revoke'):
+                result=post_tokens(c,u,path,b)
             else: return respond({'error':'No encontrado'},404)
             if path in ('/api/task-types/delete','/api/task-types/update','/api/workspace/block'):
                 g.disabled_automations.extend(automations.disable_invalid(c))
@@ -433,6 +458,19 @@ def post_automations(c,u,path,b):
         current={r['id'] for r in c.execute('SELECT id FROM automation_rules WHERE project_id=?',(p,))}
         if len(order)!=len(current) or set(order)!=current: raise ValueError('Las reglas cambiaron; vuelve a cargar')
         for position,rid in enumerate(order): c.execute('UPDATE automation_rules SET position=? WHERE id=? AND project_id=?',(position,rid,p))
+
+def post_tokens(c,u,path,b):
+    if path=='/api/tokens':
+        name=b.get('name')
+        if not isinstance(name,str) or not name.strip() or len(name.strip())>60:
+            raise ValueError('El nombre debe tener entre 1 y 60 caracteres')
+        token='flj_'+secrets.token_urlsafe(32)
+        tid=c.execute('INSERT INTO mcp_tokens(user_id,name,token_hash,created_at) VALUES(?,?,?,?)',
+                      (u['id'],name.strip(),mcp_token_hash(token),now())).lastrowid
+        return respond({'id':tid,'name':name.strip(),'token':token})
+    tid=automations.ident(b.get('id'))
+    if not c.execute('UPDATE mcp_tokens SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL',
+                     (now(),tid,u['id'])).rowcount: raise ValueError('Token no encontrado')
 
 def automate(c,tid,events,uid,project=None):
     if project is None:
