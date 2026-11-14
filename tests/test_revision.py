@@ -36,6 +36,7 @@ class RevisionTest(unittest.TestCase):
         client = self.client()
         self.assertEqual(app.app.test_client().get('/api/revision').status_code, 401)
         revision = client.get('/api/revision').json['revision']
+        self.assertEqual(client.get('/api/revision').json['version'], app.VERSION)
         with app.db() as c:
             c.execute("UPDATE tasks SET title='Temporal' WHERE id=?", (self.tid,))
             c.rollback()

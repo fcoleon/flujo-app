@@ -305,7 +305,7 @@ def api_get():
             if not u: return respond({'error':'Inicia sesión'},401)
             if blocked: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
             if must_change: return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
-            if path=='/api/revision': return respond({'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0]})
+            if path=='/api/revision': return respond({'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'version':VERSION})
             if path=='/api/tokens': return respond({'tokens':mcp_tokens(c,u['id'])})
             if path=='/api/data':
                 projects=[]
