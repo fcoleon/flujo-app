@@ -184,7 +184,7 @@ def run(c, tid, project, events, actor, now, record, metric_event, notify_assign
                     else:
                         c.execute(f'UPDATE tasks SET {field}=? WHERE id=?', (int(v) if field == 'assignee_id' and v else v or None, tid))
                         if field == 'assignee_id' and v: notify_assignment(c,tid,actor)
-                    record(c, tid, actor, f'automatización «{rule["name"]}»: cambió {field} a {v or "vacío"}')
+                    record(c, tid, actor, f'automatización «{rule["name"]}»: cambió {field} a {v or "vacío"}', field == 'status')
                     generated.append((field, old, v, snapshot(c, tid, project)))
                 c.execute('RELEASE automation_rule')
                 outcome, error = 'success', None
