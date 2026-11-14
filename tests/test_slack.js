@@ -7,7 +7,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 let data={user:{admin:true},projects:[{id:1,name:'Admin <proyecto>',role:'admin'},{id:2,name:'Lector',role:'viewer'}]};
 let requests=[],html='',form,dialog,handlers={},messages=[],destination,previous={hidden:false},focused=false,confirmations=0;
 const group=(id,assignment,comment,completion)=>({dataset:{project:id},insertAdjacentHTML(position,value){html+=value},remove(){},querySelector(s){return s.includes('assignment')?{checked:assignment}:s.includes('comment')?{checked:comment}:completion==null?null:{checked:completion}}});
-form={elements:{enabled:{checked:true},hour:{value:'9'}},before(){},addEventListener(name,fn){if(name==='change')this.change=fn},querySelector(){return {classList:{add(){}},insertAdjacentHTML(position,value){html+=value}}},querySelectorAll(s){return s==='[data-project]'?[group('',true,false,null),group('1',false,true,true),group('2',true,true,null)]:[{value:'0'},{value:'4'}]}};
+form={elements:{enabled:{checked:true},time:{value:'540'}},before(){},addEventListener(name,fn){if(name==='change')this.change=fn},querySelector(){return {classList:{add(){}},insertAdjacentHTML(position,value){html+=value}}},querySelectorAll(s){return s==='[data-project]'?[group('',true,false,null),group('1',false,true,true),group('2',true,true,null)]:[{value:'0'},{value:'4'}]}};
 dialog={isConnected:true,get firstElementChild(){return form},setAttribute(){},set innerHTML(value){html=value},get innerHTML(){return html},showModal(){},close(){handlers.close()},remove(){},addEventListener(name,fn){handlers[name]=fn},querySelector(s){if(s==='button')return {};if(s==='#slackForm')return form;if(s==='#slackError')return {textContent:''};if(s==='#slackTitle')return {classList:{add(){}},insertAdjacentHTML(position,icon){html+=icon}}},querySelectorAll(){return []}};
 const document={activeElement:{focus(){focused=true}},querySelector(){return previous},createElement(tag){return tag==='dialog'?dialog:{appendChild(){}}},body:{appendChild(){}}};
 function slackIcon(){return '<svg class="slack-icon"></svg>'}
@@ -32,7 +32,7 @@ eval(source.slice(source.indexOf('function slackPreferenceFields('),source.index
       {project_id:null,assignment:true,comment:false,completion:false},
       {project_id:1,assignment:false,comment:true,completion:true},
       {project_id:2,assignment:true,comment:true,completion:false}
-    ],summary:{enabled:true,hour:9,weekdays:[0,4]}}});
+    ],summary:{enabled:true,hour:9,minute:0,weekdays:[0,4]}}});
     const click=action=>handlers.click({target:{closest:()=>({dataset:{action}})}});
     click('test');await Promise.resolve();await Promise.resolve();
     assert.deepStrictEqual(requests[2],{path:'slack/test',body:{}});

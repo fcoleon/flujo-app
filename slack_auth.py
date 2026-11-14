@@ -19,6 +19,9 @@ TTL = 600
 
 
 def init(c):
+    digest_columns = {row[1] for row in c.execute('PRAGMA table_info(slack_digest_settings)')}
+    if digest_columns and 'minute' not in digest_columns:
+        c.execute('ALTER TABLE slack_digest_settings ADD COLUMN minute INTEGER NOT NULL DEFAULT 0 CHECK(minute BETWEEN 0 AND 59)')
     c.execute('''CREATE TABLE IF NOT EXISTS slack_oauth_states(
         state_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id INTEGER NOT NULL,
         session_hash TEXT NOT NULL, expires INTEGER NOT NULL)''')
@@ -200,7 +203,7 @@ def status():
         installation = c.execute('SELECT team_id,team_name FROM slack_installations WHERE id=1').fetchone()
         account = c.execute('SELECT slack_user_id FROM slack_accounts WHERE installation_id=1 AND user_id=?', (user['id'],)).fetchone()
         preferences = []
-        summary = {'enabled': False, 'hour': 9, 'weekdays': list(range(7))}
+        summary = {'enabled': False, 'hour': 9, 'minute': 0, 'weekdays': list(range(7))}
         if account:
             rows = c.execute('''SELECT p.project_id,p.assignment,p.comment,p.completion FROM slack_preferences p
                 WHERE p.installation_id=1 AND p.user_id=? AND (p.project_id IS NULL OR ? OR EXISTS
@@ -210,9 +213,9 @@ def status():
             for pref in preferences:
                 for key in ('assignment', 'comment', 'completion'):
                     pref[key] = bool(pref[key])
-            row = c.execute('SELECT enabled,hour,weekdays FROM slack_digest_settings WHERE installation_id=1 AND user_id=?', (user['id'],)).fetchone()
+            row = c.execute('SELECT enabled,hour,minute,weekdays FROM slack_digest_settings WHERE installation_id=1 AND user_id=?', (user['id'],)).fetchone()
             if row:
-                summary = {'enabled': bool(row['enabled']), 'hour': row['hour'], 'weekdays': json.loads(row['weekdays'])}
+                summary = {'enabled': bool(row['enabled']), 'hour': row['hour'], 'minute': row['minute'], 'weekdays': json.loads(row['weekdays'])}
         return jsonify({'configured': configured, 'installation': dict(installation) if installation else None,
                         'account': dict(account) if account else None, 'preferences': preferences, 'summary': summary})
 
@@ -226,6 +229,7 @@ def preferences():
     days = summary.get('weekdays')
     if (type(summary.get('enabled')) is not bool or type(summary.get('hour')) is not int
             or not 0 <= summary['hour'] <= 23 or not isinstance(days, list)
+            or type(summary.get('minute', 0)) is not int or summary.get('minute', 0) not in (0, 30)
             or any(type(day) is not int or not 0 <= day <= 6 for day in days)
             or len(set(days)) != len(days)):
         return error('Resumen inválido', 400)
@@ -264,9 +268,9 @@ def preferences():
                 if not updated.rowcount:
                     c.execute('''INSERT INTO slack_preferences(assignment,comment,completion,user_id,project_id,installation_id)
                                  VALUES(?,?,?,?,?,1)''', values)
-            c.execute('''INSERT INTO slack_digest_settings(installation_id,user_id,enabled,hour,weekdays) VALUES(1,?,?,?,?)
-                         ON CONFLICT(installation_id,user_id) DO UPDATE SET enabled=excluded.enabled,hour=excluded.hour,weekdays=excluded.weekdays''',
-                      (user['id'], summary['enabled'], summary['hour'], json.dumps(sorted(days))))
+            c.execute('''INSERT INTO slack_digest_settings(installation_id,user_id,enabled,hour,minute,weekdays) VALUES(1,?,?,?,?,?)
+                         ON CONFLICT(installation_id,user_id) DO UPDATE SET enabled=excluded.enabled,hour=excluded.hour,minute=excluded.minute,weekdays=excluded.weekdays''',
+                      (user['id'], summary['enabled'], summary['hour'], summary.get('minute', 0), json.dumps(sorted(days))))
     return jsonify({'ok': True})
 
 

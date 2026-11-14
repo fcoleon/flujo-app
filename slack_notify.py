@@ -32,6 +32,8 @@ def init(c):
         PRIMARY KEY(installation_id,user_id), FOREIGN KEY(installation_id,user_id)
         REFERENCES slack_accounts(installation_id,user_id) ON DELETE CASCADE)''')
     columns = {r[1] for r in c.execute('PRAGMA table_info(slack_digest_settings)')}
+    if 'minute' not in columns:
+        c.execute('ALTER TABLE slack_digest_settings ADD COLUMN minute INTEGER NOT NULL DEFAULT 0 CHECK(minute BETWEEN 0 AND 59)')
     if 'weekdays' not in columns:
         c.execute("ALTER TABLE slack_digest_settings ADD COLUMN weekdays TEXT NOT NULL DEFAULT '[0,1,2,3,4]'")
         if 'weekday' in columns:
