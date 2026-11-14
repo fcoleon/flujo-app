@@ -365,6 +365,52 @@ class DeploymentConfigTest(unittest.TestCase):
                 ['supervisorctl','update','flujo-slack'], ['supervisorctl','status','flujo-slack'],
                 ['supervisorctl','update','flujo-mcp'], ['supervisorctl','status','flujo-mcp']])
 
+    def test_update_recovers_running_slack_when_mcp_stop_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root/'config.ini').write_text('[app]\ndatabase=tasks.db\ntimezone=UTC\n')
+            config = root/'supervisor.conf'; config.touch()
+            runtime = root/'runtime.conf'; runtime.touch()
+            user = deploy.pwd.getpwuid(os.getuid()).pw_name
+            pids = {'flujo-slack': 10, 'flujo-mcp': 20}
+            def run(command):
+                if command == ['supervisorctl', 'stop', 'flujo-slack']:
+                    pids['flujo-slack'] = 0
+                elif command == ['supervisorctl', 'stop', 'flujo-mcp']:
+                    raise subprocess.CalledProcessError(1, command)
+                elif command == ['supervisorctl', 'start', 'flujo-slack']:
+                    pids['flujo-slack'] = 30
+            with patch.object(deploy,'APP_DIR',root), patch.object(deploy,'TMPFILES_FILE',runtime), \
+                 patch.object(deploy.os,'geteuid',return_value=0), patch.object(deploy.shutil,'which',return_value='/bin/fake'), \
+                 patch.object(deploy,'check_program_identity',return_value=123), \
+                 patch.object(deploy,'installed_supervisor_settings',return_value=user), \
+                 patch.object(deploy,'installed_socket_group',return_value=deploy.grp.getgrgid(os.getgid()).gr_name), \
+                 patch.object(deploy,'check_socket'), patch.object(deploy,'plan_nginx_socket_update',return_value=None), \
+                 patch.object(deploy,'plan_nginx_static_update',return_value=None), \
+                 patch.object(deploy,'prepare_venv'), patch.object(deploy,'ensure_socket_directory'), \
+                 patch.object(deploy,'supervisor_config_path',return_value=config), \
+                 patch.object(deploy,'prepare_worker_supervisor'), \
+                 patch.object(deploy,'supervisor_process_pid',side_effect=lambda name: pids[name]), \
+                 patch.object(deploy,'run',side_effect=run):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    deploy.main(['update'])
+            self.assertEqual(pids['flujo-slack'], 30)
+
+    def test_update_warns_when_nginx_has_no_mcp_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp)/'site'
+            socket = Path('/run/flujo/mcp.sock')
+            with patch.object(deploy, 'NGINX_FILE', site), patch('builtins.print') as output:
+                site.write_text('location / { proxy_pass http://unix:/run/flujo/app.sock; }\n')
+                deploy.warn_missing_mcp_location(None, socket)
+                self.assertIn('no enruta /mcp', output.call_args.args[0])
+                output.reset_mock()
+                site.write_text('location = /mcp { proxy_pass http://unix:/run/flujo/mcp.sock; }\n')
+                deploy.warn_missing_mcp_location(None, socket)
+                output.assert_not_called()
+                deploy.warn_missing_mcp_location(('original', '# location = /mcp { proxy_pass http://unix:/run/flujo/mcp.sock; }\n'), socket)
+                self.assertIn('no enruta /mcp', output.call_args.args[0])
+
     def test_update_refuses_mismatched_nginx_socket(self):
         with tempfile.TemporaryDirectory() as tmp:
             site=Path(tmp)/'flujo-app';site.write_text('proxy_pass http://unix:/run/flujo/flujo.sock:;')

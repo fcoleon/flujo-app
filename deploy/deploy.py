@@ -371,6 +371,16 @@ def plan_nginx_socket_update(socket_path, mcp_socket_path=None):
     return (original, updated) if updated != original else None
 
 
+def warn_missing_mcp_location(change, mcp_socket_path):
+    if not change and not NGINX_FILE.is_file():
+        print('Aviso: verifica manualmente que Nginx enrute /mcp; consulta deploy/README.md.', flush=True)
+        return
+    text = change[1] if change else NGINX_FILE.read_text(encoding='utf-8')
+    text = re.sub(r'(?m)#.*$', '', text)
+    blocks = re.findall(r'location\s*=\s*/mcp\s*\{([^{}]*)\}', text)
+    target = f'http://unix:{mcp_socket_path}'
+    if not any(re.search(r'\bproxy_pass\s+' + re.escape(target) + r':?\s*;', block) for block in blocks):
+        print('Aviso: Nginx no enruta /mcp al socket MCP; consulta deploy/README.md.', flush=True)
 def write_atomic(path, content):
     # No seguir enlaces ni reemplazar archivos inesperados como root.
     if path.is_symlink() or (path.exists() and not path.is_file()):
@@ -598,6 +608,7 @@ def main(argv=None):
     check_socket(socket_path,user,own_pid)
     nginx_update = plan_nginx_socket_update(socket_path, mcp_socket_path) if args.mode == 'update' else None
     if args.mode == 'update': nginx_update = plan_nginx_static_update(nginx_update)
+    if args.mode == 'update': warn_missing_mcp_location(nginx_update, mcp_socket_path)
     if args.mode == 'install' and args.skip_nginx: check_nginx_socket(socket_path, mcp_socket_path)
     if args.mode == 'update' or args.skip_nginx:
         print('Aviso: verifica el límite de acceso a /api/login en Nginx; consulta deploy/README.md.', flush=True)
@@ -610,32 +621,42 @@ def main(argv=None):
     config_exists = supervisor_config_path().exists()
     if config_exists:
         prepare_worker_supervisor(user)
-    for program in (SLACK_PROGRAM, MCP_PROGRAM):
-        pid = supervisor_process_pid(program)
+    pids = {program: supervisor_process_pid(program) for program in (SLACK_PROGRAM, MCP_PROGRAM)}
+    for program, pid in pids.items():
         if pid is not None and not config_exists:
             fail(f'Supervisor ya tiene registrado {program} sin configuración verificada.')
-        if pid:
-            run(['supervisorctl', 'stop', program])
-    if args.mode == 'install':
-        apply_config(supervisor_config, nginx_config, args.skip_nginx)
-    else:
-        run(['supervisorctl', 'reread'])
-        if nginx_update:
-            original, updated = nginx_update
-            write_atomic(NGINX_FILE, updated)
-            try:
-                run(['nginx', '-t'])
+    try:
+        for program, pid in pids.items():
+            if pid:
+                run(['supervisorctl', 'stop', program])
+        if args.mode == 'install':
+            apply_config(supervisor_config, nginx_config, args.skip_nginx)
+        else:
+            run(['supervisorctl', 'reread'])
+            if nginx_update:
+                original, updated = nginx_update
+                write_atomic(NGINX_FILE, updated)
+                try:
+                    run(['nginx', '-t'])
+                    run(['supervisorctl', 'start' if own_pid == 0 else 'restart', PROGRAM])
+                    run(['supervisorctl', 'status', PROGRAM])
+                except BaseException:
+                    write_atomic(NGINX_FILE, original)
+                    raise
+                run(['systemctl', 'reload', 'nginx'])
+            else:
                 run(['supervisorctl', 'start' if own_pid == 0 else 'restart', PROGRAM])
                 run(['supervisorctl', 'status', PROGRAM])
-            except BaseException:
-                write_atomic(NGINX_FILE, original)
-                raise
-            run(['systemctl', 'reload', 'nginx'])
-        else:
-            run(['supervisorctl', 'start' if own_pid == 0 else 'restart', PROGRAM])
-            run(['supervisorctl', 'status', PROGRAM])
-        for program in (SLACK_PROGRAM, MCP_PROGRAM):
-            supervisor_start_worker(program)
+            for program in (SLACK_PROGRAM, MCP_PROGRAM):
+                supervisor_start_worker(program)
+    except BaseException:
+        if pids[SLACK_PROGRAM]:
+            try:
+                if supervisor_process_pid(SLACK_PROGRAM) == 0:
+                    run(['supervisorctl', 'start', SLACK_PROGRAM])
+            except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+                print(f'No se pudo recuperar {SLACK_PROGRAM}; revísalo manualmente: {exc}', file=sys.stderr, flush=True)
+        raise
     print('Flujo está en ejecución.')
     return 0
 

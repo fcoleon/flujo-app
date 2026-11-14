@@ -149,6 +149,8 @@ sudo python3 deploy/deploy.py update
 
 Actualiza las dependencias y reinicia Flujo. Las URLs de los estáticos incluyen un identificador basado en su contenido y el navegador revalida sus copias en caché. El script migra los bloques anteriores de estáticos que reconoce y conserva las rutas de `/static/` configuradas manualmente. Si cambias el socket, actualiza el `proxy_pass`. Conserva el resto de la configuración y los certificados; si el sitio tiene una configuración personalizada que no puede actualizar, pedirá ajustarla manualmente. El cambio de socket puede provocar una interrupción breve.
 
+Si `update` avisa que falta la ruta MCP, agrega manualmente el bloque `location = /mcp` como se indica arriba y recarga Nginx. Si no puede verificar el sitio administrado, comprueba también cualquier configuración Nginx externa.
+
 Si falta la configuración temporal del socket, `update` intenta reconstruirla. Usa el grupo `www-data` por defecto; si Nginx usa otro, indica `sudo python3 deploy/deploy.py update --nginx-group GRUPO`. Si el directorio ya existía en `/run`, asegúrate de que se recree al reiniciar: el script no toma control de directorios existentes que podrían ser compartidos.
 
 ## Migrar una instalación anterior por TCP
