@@ -138,11 +138,11 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
   .task-dialog:has(#taskForm) .task-head-actions{gap:2px;flex:none}
   .task-dialog:has(#taskForm) .dialog-head .task-head-actions>button{width:40px;height:40px}
   .task-dialog:has(#taskForm) .task-title{font-size:20px!important;line-height:1.3;margin:0 0 8px!important}
-  .task-dialog:has(#taskForm) .task-properties{gap:2px}
-  .task-dialog:has(#taskForm) .task-property{min-height:40px;gap:8px}
-  .task-dialog:has(#taskForm) .task-property-label{width:84px}
-  .task-dialog:has(#taskForm) .detail-control{max-width:calc(100% - 92px);min-height:40px}
-  .task-dialog:has(#taskForm) .status-times{padding-left:92px;line-height:1.5}
+  .task-dialog:has(#taskForm) .task-properties{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 10px}
+  .task-dialog:has(#taskForm) .task-property{min-height:0;flex-direction:column;align-items:flex-start;gap:0}
+  .task-dialog:has(#taskForm) .task-property-label{width:auto}
+  .task-dialog:has(#taskForm) .detail-control{max-width:100%;min-height:40px}
+  .task-dialog:has(#taskForm) .status-times{flex-basis:auto;padding-left:0;line-height:1.5}
   .task-dialog:has(#taskForm) .detail-section{margin-top:16px;padding-top:14px}
   .task-dialog:has(#taskForm) .project-section-head{gap:8px}
   .task-dialog:has(#taskForm) .chips{min-width:0;flex-wrap:wrap}
@@ -162,4 +162,14 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
   .tabs:has(.project-filter-trigger)>.tab+.tab{margin-left:10px}
   .tabs>.project-filter-trigger{grid-column:5;grid-row:1;justify-self:stretch;min-width:76px;margin:0 0 4px;text-align:center}
   .tabs>.project-filter-trigger+.tab-right{grid-column:5;grid-row:2;justify-self:stretch;min-width:76px;justify-content:center;margin:0;padding-bottom:6px;text-align:center;white-space:nowrap}
+}
+.task-property[data-property=status]{display:grid;grid-template-columns:95px minmax(0,max-content) minmax(0,1fr);gap:0 10px;align-items:center}
+.task-property[data-property=status]>.task-property-label{grid-column:1}
+.task-property[data-property=status]>.status-trigger,.task-property[data-property=status]>.detail-value{grid-column:2;max-width:100%}
+.task-property[data-property=status]>.status-times{grid-column:3;padding:0;min-width:0;line-height:1.5}
+@media(max-width:600px){
+  .task-dialog:has(#taskForm) .task-property[data-property=status]{grid-column:1/-1;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:0 10px}
+  .task-dialog:has(#taskForm) .task-property[data-property=status]>.task-property-label{grid-column:1/-1}
+  .task-dialog:has(#taskForm) .task-property[data-property=status]>.status-trigger,.task-dialog:has(#taskForm) .task-property[data-property=status]>.detail-value{grid-column:1}
+  .task-dialog:has(#taskForm) .task-property[data-property=status]>.status-times{grid-column:2}
 }
