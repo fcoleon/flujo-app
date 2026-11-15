@@ -25,7 +25,7 @@ class SlackIntegrationTest(unittest.TestCase):
             for uid in range(1, 5):
                 c.execute('INSERT INTO users(id,name,username,password,salt) VALUES(?,?,?,?,?)',
                           (uid, str(uid), str(uid), '', ''))
-                c.execute('INSERT INTO sessions VALUES(?,?)', (str(uid), uid))
+                c.execute('INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,4102444800)', (str(uid), uid))
             c.execute("INSERT INTO projects(id,name) VALUES(1,'Proyecto'),(2,'Otro')")
             c.execute("INSERT INTO columns(id,project_id,name,position) VALUES(1,1,'Entrada',0),(2,2,'Entrada',0)")
             c.execute("INSERT INTO members VALUES(1,1,'admin'),(1,2,'editor'),(1,3,'admin'),(2,4,'admin')")
