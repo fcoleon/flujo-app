@@ -157,7 +157,7 @@ def active(c, user_id, session_hash, admin=False):
     if not user or user['blocked'] or user['must_change_password'] or (admin and not user['admin']):
         return False
     return any(secrets.compare_digest(digest(row[0]), session_hash) for row in
-               c.execute('SELECT token FROM sessions WHERE user_id=?', (user_id,)))
+               c.execute('SELECT token FROM sessions WHERE user_id=? AND expires_at>?', (user_id,int(time.time()))))
 
 
 def signed_in(c, admin=False):

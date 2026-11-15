@@ -18,7 +18,7 @@ class RevisionTest(unittest.TestCase):
         with app.db() as c:
             c.execute('PRAGMA journal_mode=WAL')
             c.execute("INSERT INTO users(id,name,username,password,salt,admin) VALUES(1,'Admin','admin','','',1)")
-            c.execute("INSERT INTO sessions VALUES('token',1)")
+            c.execute("INSERT INTO sessions(token,user_id,expires_at) VALUES('token',1,4102444800)")
             c.execute("INSERT INTO projects(id,name,public_id) VALUES(1,'Antes','project-1')")
             app.ensure_base_type(c, 1)
             self.tid = c.execute("INSERT INTO tasks(title,created_at,type_id,status_id,public_id) VALUES('Inicial',?,?,?,'task-1')", (app.now(), app.ensure_base_type(c, None), app.default_status(c, app.ensure_base_type(c, None)))).lastrowid

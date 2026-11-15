@@ -130,6 +130,51 @@ function showPasswordChange(){
 function sidebarCollapsed(){try{let value=localStorage.getItem('flujo:sidebar:'+data.user.id);return value===null?window.matchMedia('(max-width:800px)').matches:value==='collapsed'}catch{return window.matchMedia('(max-width:800px)').matches}}
 function toggleSidebar(){let sidebar=$('#mainSidebar'),button=$('#sidebarToggle'),collapsed=!sidebar.classList.contains('is-collapsed');sidebar.classList.toggle('is-collapsed',collapsed);button.setAttribute('aria-expanded',String(!collapsed));button.setAttribute('aria-label',collapsed?'Expandir menú':'Ocultar menú');button.dataset.tooltip=collapsed?'Expandir menú':'Ocultar menú';button.textContent=collapsed?'›':'‹';try{localStorage.setItem('flujo:sidebar:'+data.user.id,collapsed?'collapsed':'expanded')}catch{}}
 function render(){saveBoardScroll();let p=data.projects.find(x=>x.id===active), orphan=active===0, writable=p&&p.role!=='viewer';let tasks=orphan?data.tasks.filter(t=>!t.has_projects&&!t.parent_id):data.tasks.filter(t=>t.placements.some(x=>x.project_id===active));let count=tasks.length;$('#app').innerHTML=`<div class="shell"><aside id="mainSidebar" class="sidebar ${sidebarCollapsed()?'is-collapsed':''}"><div class="sidebar-top"><div class="brand"><span class="brandmark">✳</span> flujo<span class="brand-dot">.</span></div><button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="mainSidebar" aria-expanded="${!sidebarCollapsed()}" aria-label="${sidebarCollapsed()?'Expandir menú':'Ocultar menú'}" data-tooltip="${sidebarCollapsed()?'Expandir menú':'Ocultar menú'}" onclick="toggleSidebar()">${sidebarCollapsed()?'›':'‹'}</button></div><button type="button" class="workspace" onclick="workspaceSettings()" aria-label="Configurar workspace" data-tooltip="${esc(data.workspace_name)}"><span class="workspace-icon">${esc(data.workspace_name.charAt(0).toUpperCase())}</span><span class="workspace-label"><strong>${esc(data.workspace_name)}</strong><small>Espacio de trabajo</small></span><span class="chevron">⌄</span></button><div class="nav-caption">WORKSPACE</div><button class="nav-item ${orphan?'selected':''}" onclick="selectProject(0)" aria-label="Sin proyecto" data-tooltip="Sin proyecto"><span>${icon('tasks')}</span><span class="nav-label">Sin proyecto</span><em>${data.tasks.filter(t=>!t.has_projects&&!t.parent_id).length}</em></button><div class="nav-caption project-caption">PROYECTOS ${data.user.admin?'<button class="create-project-control" onclick="newProject()" aria-label="Crear proyecto" data-tooltip="Crear proyecto">＋</button>':''}</div>${data.user.admin?'<button class="sidebar-add-project create-project-control" onclick="newProject()" aria-label="Crear proyecto" data-tooltip="Crear proyecto">＋</button>':''}<div class="project-list">${data.projects.map(x=>`<button class="nav-item ${active===x.id?'selected':''}" aria-label="${esc(x.name)}" data-tooltip="${esc(x.name)}" onclick="selectProject(${x.id})"><i style="background:${esc(x.color)}"></i><span class="project-name">${esc(x.name)}</span></button>`).join('')||'<div class="empty-nav">Aún no hay proyectos</div>'}</div><div class="sidebar-bottom"><div class="profile"><button type="button" class="profile-control" onclick="editProfile()" aria-label="Mi perfil" data-tooltip="Mi perfil">${avatar(data.user.name)}<span class="profile-info"><strong>${esc(data.user.name)}</strong><small>${data.user.admin?'Admin del workspace':'Miembro'}</small></span></button><button class="logout-control" aria-label="Cerrar sesión" data-tooltip="Cerrar sesión" onclick="logout()">↪</button></div></div></aside><main class="${p?'board-main':''}"><header class="topbar"><div class="breadcrumb">${esc(data.workspace_name)} <span>/</span> <strong>${esc(orphan?'Sin proyecto':p?.name||'Inicio')}</strong></div><div class="top-actions">${(p||orphan)&&boardView==='board'?`<label class="search top-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Buscar tareas del tablero por nombre o descripción" placeholder="Buscar en este tablero" value="${esc(filter)}" oninput="filter=this.value; renderBoard()"></label>`:''}<span class="today">${new Intl.DateTimeFormat('es-CL',{day:'numeric',month:'long',year:'numeric'}).format(new Date())}</span>${avatar(data.user.name)}</div></header>${!p&&!orphan?`<div class="welcome"><div class="eyebrow">TU ESPACIO DE TRABAJO</div><h1>Todo empieza con un proyecto.</h1><p>Reúne las tareas y a tu equipo en un solo lugar.</p>${data.user.admin?'<button class="primary" onclick="newProject()">＋ Crear proyecto</button>':''}</div>`:`<section class="content ${p?(boardView==='board'?'board-layout':'stats-layout'):''}"><div class="project-heading"><div class="project-heading-main"><div class="project-title-row"><h1>${orphan?'Sin proyecto':esc(p.name)}${p?.role==='admin'?` <button class="project-settings-trigger" type="button" aria-label="Editar tablero" data-tooltip="Editar tablero" onclick="editProject()">⚙</button>`:''}</h1>${p?.role==='viewer'?`<span class="board-readonly"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Solo tienes acceso para ver este board, no puedes editar, crear ni borrar.</span></span>`:''}</div><p>${orphan?'Tareas que aún no pertenecen a un proyecto.':esc(p.description||'')}</p></div><div class="heading-actions">${orphan&&data.user.admin?'<button class="primary" onclick="newOrphan()">＋ &nbsp; Nueva tarea</button>':''}${p?`<div class="member-stack">${p.members.slice(0,3).map(m=>avatar(m.name)).join('')}</div>${writable?'<button class="primary" onclick="newTask()">＋ &nbsp; Nueva tarea</button>':''}`:''}</div></div><div class="tabs"><button class="tab ${boardView==='board'?'active':''}" onclick="setBoardView('board')">▦ &nbsp; Tablero</button>${p?.role==='admin'?`<button class="tab ${boardView==='stats'?'active':''}" onclick="setBoardView('stats')">▥ &nbsp; Estadísticas</button>`:''}${boardView==='board'?`<div class="tab-right"><span id="boardCount">${count} ${count===1?'tarea':'tareas'}</span></div>`:''}</div><div id="board" ${p&&boardView==='stats'?'tabindex="0" role="region" aria-label="Contenido de estadísticas"':''}></div></section>`}</main></div>`;if(p||orphan){if(boardView==='stats'&&p?.role==='admin')renderStats();else renderBoard()}}
+const mobileSidebarMedia=window.matchMedia('(max-width:800px)');
+function closeMobileSidebar(restoreFocus=false){
+  let sidebar=$('#mainSidebar'),trigger=$('#mobileSidebarToggle'),backdrop=$('#mobileSidebarBackdrop'),main=$('.shell>main');
+  if(!sidebar||!trigger)return;
+  sidebar.classList.remove('mobile-open');sidebar.inert=mobileSidebarMedia.matches;
+  if(main)main.inert=false;
+  backdrop.hidden=true;trigger.setAttribute('aria-expanded','false');
+  if(restoreFocus&&mobileSidebarMedia.matches)trigger.focus();
+}
+function syncMobileSidebar(){
+  let sidebar=$('#mainSidebar'),button=$('#sidebarToggle');
+  if(!sidebar||!button)return;
+  closeMobileSidebar();
+  let collapsed=!mobileSidebarMedia.matches&&sidebarCollapsed();
+  sidebar.classList.toggle('is-collapsed',collapsed);
+  button.setAttribute('aria-expanded',String(!collapsed));
+  button.setAttribute('aria-label',mobileSidebarMedia.matches?'Cerrar menú':collapsed?'Expandir menú':'Ocultar menú');
+  button.dataset.tooltip=mobileSidebarMedia.matches?'Cerrar menú':collapsed?'Expandir menú':'Ocultar menú';
+  button.textContent=mobileSidebarMedia.matches?'×':collapsed?'›':'‹';
+}
+function setupMobileSidebar(){
+  let sidebar=$('#mainSidebar'),topbar=$('.topbar'),shell=$('.shell'),button=$('#sidebarToggle');
+  if(!sidebar||!topbar||!shell)return;
+  let trigger=document.createElement('button');trigger.id='mobileSidebarToggle';trigger.className='mobile-sidebar-toggle';trigger.type='button';trigger.setAttribute('aria-label','Abrir menú');trigger.setAttribute('aria-controls','mainSidebar');trigger.setAttribute('aria-expanded','false');trigger.innerHTML='<span class="brandmark" aria-hidden="true">✳</span>';
+  let backdrop=document.createElement('button');backdrop.id='mobileSidebarBackdrop';backdrop.className='mobile-sidebar-backdrop';backdrop.type='button';backdrop.hidden=true;backdrop.tabIndex=-1;backdrop.setAttribute('aria-label','Cerrar menú');
+  topbar.prepend(trigger);shell.insertBefore(backdrop,sidebar);
+  trigger.onclick=()=>{sidebar.inert=false;sidebar.classList.add('mobile-open');backdrop.hidden=false;trigger.setAttribute('aria-expanded','true');let main=$('.shell>main');if(main)main.inert=true;button.focus()};
+  backdrop.onclick=()=>closeMobileSidebar(true);
+  button.onclick=()=>mobileSidebarMedia.matches?closeMobileSidebar(true):toggleSidebar();
+  sidebar.addEventListener('click',e=>{let clicked=e.target.closest('button');if(mobileSidebarMedia.matches&&clicked&&clicked!==button)closeMobileSidebar()});
+  syncMobileSidebar();
+}
+const renderWithoutMobileSidebar=render;
+render=function(){renderWithoutMobileSidebar();setupMobileSidebar()};
+mobileSidebarMedia.addEventListener('change',syncMobileSidebar);
+document.addEventListener('keydown',e=>{
+  let sidebar=$('#mainSidebar');
+  if(!mobileSidebarMedia.matches||!sidebar?.classList.contains('mobile-open'))return;
+  if(e.key==='Escape'){e.preventDefault();closeMobileSidebar(true);return}
+  if(e.key!=='Tab')return;
+  let items=[...sidebar.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter(el=>el.getClientRects().length);
+  if(!items.length)return;
+  if(e.shiftKey&&document.activeElement===items[0]){e.preventDefault();items[items.length-1].focus()}
+  else if(!e.shiftKey&&document.activeElement===items[items.length-1]){e.preventDefault();items[0].focus()}
+});
 let currentRoute=location.pathname+location.search,openingDeepLink=false;
 function boardPath(id){return id==='mine'?'/my-tasks':id===0?'/board/no-project':data.projects.find(p=>p.id===id)?.public_id?'/board/'+data.projects.find(p=>p.id===id).public_id:'/'}
 function setBoardUrl(id,replace=false){let url=boardPath(id);if(location.pathname+location.search!==url)history[replace?'replaceState':'pushState'](null,'',url);currentRoute=url}

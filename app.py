@@ -7,7 +7,8 @@ from contextlib import closing
 from flask import Flask, g, jsonify, make_response, request, send_from_directory, abort, render_template_string
 from werkzeug.middleware.proxy_fix import ProxyFix
 from descriptions import DescriptionSanitizer, sanitize_description
-from auth import hashpw, current_user, session_response, rotate_session
+from auth import hashpw, current_user, session_response, create_session, rotate_session, SESSION_SECONDS
+import time
 from pathlib import Path
 from settings import load_settings
 
@@ -64,6 +65,10 @@ def init():
         CREATE TABLE IF NOT EXISTS placements(task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, column_id INTEGER NOT NULL REFERENCES columns(id) ON DELETE CASCADE, position INTEGER NOT NULL, PRIMARY KEY(task_id,project_id));
         CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, message TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);''')
+        if 'expires_at' not in {r['name'] for r in c.execute('PRAGMA table_info(sessions)')}:
+            c.execute('ALTER TABLE sessions ADD COLUMN expires_at INTEGER')
+        c.execute('UPDATE sessions SET expires_at=? WHERE expires_at IS NULL',(int(time.time())+SESSION_SECONDS,))
+        c.execute('CREATE INDEX IF NOT EXISTS sessions_expires_at ON sessions(expires_at)')
         if 'color' not in {r['name'] for r in c.execute('PRAGMA table_info(columns)')}:
             c.execute('ALTER TABLE columns ADD COLUMN color TEXT')
         for project in c.execute('SELECT DISTINCT project_id FROM columns WHERE color IS NULL').fetchall():
@@ -399,7 +404,7 @@ def api_post():
                 row=c.execute('SELECT * FROM users WHERE username=?',(username,)).fetchone()
                 password_hash=hashpw(pw,row['salt'] if row else '00'*16)
                 if not hmac.compare_digest(row['password'] if row else '0'*64,password_hash) or not row: return respond({'error':'Usuario o contraseña incorrectos'},401)
-                token=secrets.token_urlsafe(32); c.execute('INSERT INTO sessions VALUES(?,?)',(token,row['id'])); c.commit()
+                token=create_session(c,row['id']); c.commit()
                 return session_response(token)
             if not u: return respond({'error':'Inicia sesión'},401)
             if path=='/api/logout':

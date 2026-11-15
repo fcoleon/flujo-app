@@ -22,7 +22,7 @@ class SlackAuthTest(unittest.TestCase):
         self.app.register_blueprint(slack_auth.blueprint)
         with self.db() as c:
             c.executescript('''CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT,username TEXT,admin INTEGER,blocked INTEGER,must_change_password INTEGER);
-                CREATE TABLE sessions(token TEXT PRIMARY KEY,user_id INTEGER);
+                CREATE TABLE sessions(token TEXT PRIMARY KEY,user_id INTEGER,expires_at INTEGER);
                 CREATE TABLE slack_installations(id INTEGER PRIMARY KEY,team_id TEXT,team_name TEXT,bot_token TEXT);
                 CREATE TABLE slack_accounts(installation_id INTEGER REFERENCES slack_installations(id) ON DELETE CASCADE,user_id INTEGER,slack_user_id TEXT,PRIMARY KEY(installation_id,user_id),UNIQUE(installation_id,slack_user_id));
                 CREATE TABLE projects(id INTEGER PRIMARY KEY);
@@ -32,7 +32,7 @@ class SlackAuthTest(unittest.TestCase):
                 CREATE TABLE slack_queue(id INTEGER PRIMARY KEY,installation_id INTEGER,user_id INTEGER,team_id TEXT,slack_user_id TEXT,kind TEXT,task_id INTEGER,available_at TEXT,created_at TEXT,updated_at TEXT,state TEXT DEFAULT 'pending');
                 INSERT INTO projects VALUES(1),(2);
                 INSERT INTO users VALUES(1,'Admin','admin',1,0,0);
-                INSERT INTO sessions VALUES('session-secret',1);''')
+                INSERT INTO sessions VALUES('session-secret',1,4102444800);''')
             slack_auth.init(c)
             slack_auth.init(c)
         self.client = self.app.test_client()
@@ -91,13 +91,20 @@ class SlackAuthTest(unittest.TestCase):
             c.execute('DELETE FROM sessions')
         self.assertEqual(self.callback('install', state).status_code, 400)
         with self.db() as c:
-            c.execute("INSERT INTO sessions VALUES('session-secret',1)")
+            c.execute("INSERT INTO sessions VALUES('session-secret',1,4102444800)")
         self.assertEqual(self.callback('install', state).status_code, 400)
         state = self.start('install')['state'][0]
         with self.db() as c:
             c.execute('UPDATE users SET admin=0')
         self.assertEqual(self.callback('install', state).status_code, 400)
         self.assertEqual(self.client.post('/api/slack/disconnect', json={}).status_code, 403)
+
+    def test_expired_session_cannot_finish_oauth(self):
+        state = self.start('install')['state'][0]
+        with self.db() as c:
+            c.execute('UPDATE sessions SET expires_at=?',(int(time.time())-1,))
+        self.assertEqual(self.callback('install', state).status_code, 400)
+        self.assertNotEqual(self.client.post('/api/slack/install/start', json={}).status_code, 200)
 
     def test_wrong_team_expiry_and_provider_failure(self):
         self.assertEqual(self.install().status_code, 302)
