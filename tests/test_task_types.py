@@ -37,7 +37,7 @@ class TaskTypesTest(unittest.TestCase):
 
     def client_for(self,user):
         token=f'test-session-{user}'
-        with app.db() as c: c.execute('INSERT OR IGNORE INTO sessions VALUES(?,?)',(token,user))
+        with app.db() as c: c.execute('INSERT OR IGNORE INTO sessions(token,user_id,expires_at) VALUES(?,?,4102444800)',(token,user))
         client=app.app.test_client();client.set_cookie('session',token);return client
 
     def post(self,path,data,user=1):
@@ -182,8 +182,8 @@ class TaskTypesTest(unittest.TestCase):
         salt='ab'*16
         with app.db() as c:
             c.execute('UPDATE users SET salt=?,password=? WHERE id=3',(salt,app.hashpw('anterior123',salt)))
-            c.execute("INSERT INTO sessions VALUES('other-session',3)")
-            c.execute("INSERT INTO sessions VALUES('another-user',2)")
+            c.execute("INSERT INTO sessions(token,user_id,expires_at) VALUES('other-session',3,4102444800)")
+            c.execute("INSERT INTO sessions(token,user_id,expires_at) VALUES('another-user',2,4102444800)")
         client=self.client_for(3)
         self.assertEqual(client.post('/api/profile',json={'name':'Lector'}).status_code,200)
         self.assertEqual(client.get_cookie('session').value,'test-session-3')

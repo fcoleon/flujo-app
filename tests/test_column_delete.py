@@ -17,7 +17,7 @@ class ColumnDeleteTest(unittest.TestCase):
         with app.db() as c:
             for uid,admin in ((1,1),(2,0),(3,0),(4,0)):
                 c.execute('INSERT INTO users(id,name,username,password,salt,admin) VALUES(?,?,?,?,?,?)',(uid,str(uid),str(uid),'','',admin))
-                c.execute('INSERT INTO sessions VALUES(?,?)',(str(uid),uid))
+                c.execute('INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,4102444800)',(str(uid),uid))
             for p in (1,2):
                 c.execute('INSERT INTO projects(id,name) VALUES(?,?)',(p,str(p)));app.ensure_base_type(c,p)
             c.executemany('INSERT INTO members VALUES(?,?,?)',[(1,2,'editor'),(1,3,'viewer'),(1,4,'admin')])
