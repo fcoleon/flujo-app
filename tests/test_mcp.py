@@ -19,7 +19,7 @@ class McpTokenTest(unittest.TestCase):
         with app.db() as c:
             for uid,admin in ((1,1),(2,0)):
                 c.execute('INSERT INTO users(id,name,username,password,salt,admin) VALUES(?,?,?,?,?,?)',(uid,str(uid),str(uid),'','',admin))
-                c.execute('INSERT INTO sessions VALUES(?,?)',(str(uid),uid))
+                c.execute('INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,4102444800)',(str(uid),uid))
 
     def client(self,user=None):
         client=app.app.test_client()
