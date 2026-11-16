@@ -117,6 +117,7 @@ class McpToolsTest(unittest.TestCase):
             c.execute('INSERT INTO projects(id,name,public_id) VALUES(1,?,?)', ('Visible', self.public_id))
             c.execute('INSERT INTO projects(id,name) VALUES(2,?)', ('Privado',))
             c.execute('INSERT INTO members(project_id,user_id,role) VALUES(1,2,?)', ('viewer',))
+            c.execute("INSERT INTO columns(id,project_id,name,position) VALUES(20,2,'Backlog',0)")
             for pid in (1, 2):
                 type_id = app.ensure_base_type(c, pid)
                 c.execute('INSERT INTO columns(id,project_id,name,position) VALUES(?,?,?,?)', (pid, pid, 'To do', 1))
@@ -130,6 +131,7 @@ class McpToolsTest(unittest.TestCase):
                                  VALUES(2,'Terminar informe',2,'2026-01-02T00:00:00+00:00',?,?,?)''',
                               (type_id, done, str(uuid4())))
                     c.execute('INSERT INTO placements(task_id,project_id,column_id,position) VALUES(1,1,1,1)')
+                    c.execute('INSERT INTO placements(task_id,project_id,column_id,position) VALUES(1,2,20,1)')
                     c.execute('INSERT INTO placements(task_id,project_id,column_id,position) VALUES(2,1,1,2)')
                     c.execute('INSERT INTO comments(task_id,user_id,body,created_at) VALUES(1,1,?,?)', ('Hola', '2026-01-03T00:00:00+00:00'))
                     c.execute('INSERT INTO history(task_id,user_id,message,created_at) VALUES(1,1,?,?)', ('Creada', '2026-01-03T00:00:00+00:00'))
@@ -210,6 +212,13 @@ class McpToolsTest(unittest.TestCase):
         self.assertEqual(titles(self.call('list_tasks', {'search': 'pan'})), {'Comprar pan'})
         self.assertEqual(titles(self.call('list_tasks', {'priority': 'Alta'})), {'Comprar pan'})
         self.assertEqual(titles(self.call('list_tasks', {'due_before': '2026-01-01'})), {'Comprar pan'})
+        viewer_task = next(t for t in self.data(self.call('list_tasks'))['tasks'] if t['id'] == 1)
+        self.assertEqual(viewer_task['placements'], [{'project': {'id': 1, 'name': 'Visible'},
+                                                       'column': {'id': 1, 'name': 'To do'}}])
+        admin_task = next(t for t in self.data(self.call('list_tasks', token='admin'))['tasks'] if t['id'] == 1)
+        self.assertEqual(admin_task['placements'], [
+            {'project': {'id': 2, 'name': 'Privado'}, 'column': {'id': 20, 'name': 'Backlog'}},
+            {'project': {'id': 1, 'name': 'Visible'}, 'column': {'id': 1, 'name': 'To do'}}])
         page = self.data(self.call('list_tasks', {'limit': 1}))
         self.assertEqual(len(page['tasks']), 1)
         self.assertTrue(page['has_more'])

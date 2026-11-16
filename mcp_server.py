@@ -96,18 +96,25 @@ def readable(c, u, tid):
     return c.execute('SELECT * FROM tasks WHERE id=?', (tid,)).fetchone()
 
 
-def task_summary(c, t):
+def task_summary(c, t, u):
     status = c.execute('SELECT name,is_done FROM task_statuses WHERE id=?', (t['status_id'],)).fetchone() if t['status_id'] else None
     kind = c.execute('SELECT name FROM task_types WHERE id=?', (t['type_id'],)).fetchone() if t['type_id'] else None
     who = c.execute('SELECT name,username FROM users WHERE id=?', (t['assignee_id'],)).fetchone() if t['assignee_id'] else None
-    projects = [r['name'] for r in c.execute('''SELECT p.name FROM placements pl JOIN projects p ON p.id=pl.project_id
-                                                WHERE pl.task_id=? ORDER BY p.name''', (t['id'],))]
+    placements = []
+    for row in c.execute('''SELECT p.id AS project_id,p.name AS project,c.id AS column_id,c.name AS column
+                            FROM placements pl JOIN projects p ON p.id=pl.project_id
+                            JOIN columns c ON c.id=pl.column_id
+                            WHERE pl.task_id=? ORDER BY p.name,c.position,c.id''', (t['id'],)):
+        if app.role(c, u, row['project_id']):
+            placements.append({'project': {'id': row['project_id'], 'name': row['project']},
+                               'column': {'id': row['column_id'], 'name': row['column']}})
     return {'id': t['id'], 'public_id': t['public_id'], 'title': t['title'], 'priority': t['priority'],
             'due_date': t['due_date'], 'created_at': t['created_at'], 'completed_at': t['completed_at'],
             'status': {'name': status['name'], 'done': bool(status['is_done'])} if status else None,
             'type': kind['name'] if kind else None,
             'assignee': {'name': who['name'], 'username': who['username']} if who else None,
-            'projects': projects}
+            'projects': [placement['project']['name'] for placement in placements],
+            'placements': placements}
 
 
 @mcp.tool()
@@ -214,7 +221,7 @@ async def list_tasks(project: str | int | None = None, assignee: str | None = No
         for t in c.execute(sql, params):
             if check_access and not app.can_task(c, u, t['id']):
                 continue
-            collected.append(task_summary(c, t))
+            collected.append(task_summary(c, t, u))
             if len(collected) > limit:
                 has_more = True
                 break
@@ -227,7 +234,7 @@ async def get_task(task: str | int) -> dict:
     u = user()
     with closing(app.db()) as c:
         t = readable(c, u, ident_task(c, task))
-        item = task_summary(c, t)
+        item = task_summary(c, t, u)
         item['description'] = t['description']
         item['description_format'] = t['description_format']
         item['parent_id'] = t['parent_id']
