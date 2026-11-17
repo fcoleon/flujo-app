@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 
 class DescriptionSanitizer(HTMLParser):
-    allowed = {'p','div','br','strong','b','em','i','u','s','ul','ol','li','blockquote','h2','h3','a'}
+    allowed = {'p','div','br','strong','b','em','i','u','s','ul','ol','li','blockquote','h2','h3','a','pre','code'}
     def __init__(self):
         super().__init__(convert_charrefs=True); self.parts=[]
     def handle_starttag(self, tag, attrs):
