@@ -868,7 +868,17 @@ function attachmentType(name){let ext=name.includes('.')?name.split('.').pop().t
 function renderAttachments(id){
   let list=$('#attachmentList');if(!list||Number(list.dataset.task)!==id)return;
   let task=data.tasks.find(t=>t.id===id),project=data.projects.find(p=>p.id===active),editable=task?.can_edit&&(!project||project.role!=='viewer');
-  list.innerHTML=(attachmentItems[id]||[]).map(item=>`<details class="attachment-card"><summary title="${esc(item.name)}"><span class="attachment-name">${esc(item.name)}</span><small>${esc(attachmentType(item.name))}</small></summary><div class="attachment-menu"><a href="/api/attachments/${esc(item.id)}">Descargar</a>${editable?`<button type="button" onclick="deleteAttachment('${esc(item.id)}',${id})">Eliminar</button>`:''}</div></details>`).join('')+attachmentQueue.filter(item=>item.task===id).map(item=>`<div class="attachment-card attachment-pending" title="${esc(item.file.name)}"><span class="attachment-name">${esc(item.file.name)}</span><small><span class="attachment-spinner" aria-hidden="true"></span> ${item.loading?'Subiendo…':'En espera'}</small></div>`).join('');
+  list.innerHTML=(attachmentItems[id]||[]).map(item=>`<details class="attachment-card"><summary data-tooltip="${esc(item.name)}"><span class="attachment-name">${esc(item.name)}</span><small>${esc(attachmentType(item.name))}</small></summary><div class="attachment-menu"><a href="/api/attachments/${esc(item.id)}">Descargar</a>${editable?`<button type="button" onclick="deleteAttachment('${esc(item.id)}',${id})">Eliminar</button>`:''}</div></details>`).join('')+attachmentQueue.filter(item=>item.task===id).map(item=>`<div class="attachment-card attachment-pending" data-tooltip="${esc(item.file.name)}"><span class="attachment-name">${esc(item.file.name)}</span><small><span class="attachment-spinner" aria-hidden="true"></span> ${item.loading?'Subiendo…':'En espera'}</small></div>`).join('');
+}
+function attachmentRipple(hint,event,rect,state){
+  let x=event.clientX,y=event.clientY,now=performance.now();
+  if(!state)return {x,y,lastX:x,lastY:y,time:now};
+  let moved=x!==state.lastX||y!==state.lastY;state.lastX=x;state.lastY=y;
+  if(moved&&Math.hypot(x-state.x,y-state.y)>=12&&now-state.time>=300&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    let ripple=document.createElement('span');ripple.className='attachment-ripple';ripple.style.left=(x-rect.left)+'px';ripple.style.top=(y-rect.top)+'px';ripple.addEventListener('animationend',()=>ripple.remove());hint.appendChild(ripple);
+    state.x=x;state.y=y;state.time=now;
+  }
+  return state;
 }
 function setupAttachments(id,editable){
   if(!data.attachments_enabled)return;
@@ -878,11 +888,13 @@ function setupAttachments(id,editable){
   api('tasks/'+id+'/attachments').then(result=>{if(generation!==(attachmentGeneration[id]||0)){if(list.isConnected)api('tasks/'+id+'/attachments').then(fresh=>{attachmentItems[id]=fresh.attachments;if(list.isConnected)renderAttachments(id)}).catch(err=>toast(err.message));return}attachmentItems[id]=result.attachments;if(list.isConnected)renderAttachments(id)}).catch(err=>toast(err.message));
   if(!editable)return;
   let input=$('#attachmentInput');$('#attachmentChoose').onclick=()=>input.click();
-  let hint=document.createElement('div');hint.className='attachment-drop-hint';hint.hidden=true;hint.innerHTML='<span>Suelta el archivo para agregarlo a la tarea</span>';dialog.parentElement.appendChild(hint);
+  let hint=document.createElement('div'),rippleState=null,hintTimer=null;hint.className='attachment-drop-hint';hint.hidden=true;hint.innerHTML='<span>Suelta el archivo para agregarlo a la tarea</span>';dialog.parentElement.appendChild(hint);
+  function showHint(){if(!hint.hidden&&!hint.classList.contains('is-leaving')&&!hint.classList.contains('is-dropped'))return;clearTimeout(hintTimer);hint.hidden=false;hint.classList.remove('is-leaving','is-dropped');hint.classList.add('is-entering')}
+  function hideHint(dropped){rippleState=null;clearTimeout(hintTimer);hint.classList.remove('is-entering','is-leaving','is-dropped');if(window.matchMedia('(prefers-reduced-motion: reduce)').matches){hint.hidden=true;return}hint.classList.add(dropped?'is-dropped':'is-leaving');hintTimer=setTimeout(()=>{hint.hidden=true},dropped?700:200)}
   input.onchange=()=>{enqueueAttachments(id,input.files);input.value=''};
-  dialog.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('Files')){e.preventDefault();e.dataTransfer.dropEffect='copy';let rect=dialog.getBoundingClientRect();Object.assign(hint.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});hint.hidden=false}});
-  dialog.addEventListener('dragleave',e=>{if(!dialog.contains(e.relatedTarget))hint.hidden=true});
-  dialog.addEventListener('drop',e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();hint.hidden=true;enqueueAttachments(id,e.dataTransfer.files)});
+  dialog.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('Files')){e.preventDefault();e.dataTransfer.dropEffect='copy';let rect=dialog.getBoundingClientRect();Object.assign(hint.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});showHint();rippleState=attachmentRipple(hint,e,rect,rippleState)}});
+  dialog.addEventListener('dragleave',e=>{if(!hint.hidden&&!hint.classList.contains('is-dropped')&&!dialog.contains(e.relatedTarget))hideHint(false)});
+  dialog.addEventListener('drop',e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();hideHint(true);enqueueAttachments(id,e.dataTransfer.files)});
 }
 function enqueueAttachments(id,files){for(let file of files)attachmentQueue.push({task:id,file});renderAttachments(id);uploadNextAttachment()}
 async function uploadNextAttachment(){
