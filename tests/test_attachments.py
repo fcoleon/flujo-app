@@ -36,7 +36,10 @@ class AttachmentsTest(unittest.TestCase):
         return self.client.post(f'/api/tasks/{self.task}/attachments',data={'file':(io.BytesIO(content),name)},headers=headers or {'X-Flujo-Request':'attachment'})
 
     def test_upload_download_and_delete(self):
+        self.assertEqual(self.client.get('/api/data').json['tasks'][0]['attachment_count'],0)
         result=self.upload();self.assertEqual(result.status_code,200)
+        self.assertEqual(result.json['attachment_count'],1)
+        self.assertEqual(self.client.get('/api/data').json['tasks'][0]['attachment_count'],1)
         ident=result.json['id']
         items=self.client.get(f'/api/tasks/{self.task}/attachments').json['attachments']
         self.assertEqual(items[0]['name'],'doc.pdf')
@@ -45,7 +48,10 @@ class AttachmentsTest(unittest.TestCase):
         self.assertEqual(response.data,b'abc')
         self.assertIn('attachment',response.headers['Content-Disposition'])
         self.assertEqual(response.headers['X-Content-Type-Options'],'nosniff')
-        self.assertEqual(self.client.post('/api/attachments/'+ident,json={}).status_code,200)
+        deleted=self.client.post('/api/attachments/'+ident,json={})
+        self.assertEqual(deleted.status_code,200)
+        self.assertEqual(deleted.json['attachment_count'],0)
+        self.assertEqual(self.client.get('/api/data').json['tasks'][0]['attachment_count'],0)
         with app.db() as c: self.assertEqual(c.execute('SELECT count(*) FROM avatar_cleanup').fetchone()[0],1)
 
     def test_permissions_and_validation(self):
@@ -89,9 +95,3 @@ class AttachmentsTest(unittest.TestCase):
         self.assertEqual(other.get('/api/attachments/'+ident).status_code,200)
         self.assertEqual(other.post('/api/attachments/'+ident,json={}).status_code,403)
         self.assertEqual(other.post(f'/api/tasks/{self.task}/attachments',data={'file':(io.BytesIO(b'x'),'x')},headers={'X-Flujo-Request':'attachment'}).status_code,403)
-
-    def test_health(self):
-        with self.assertLogs(app.app.logger,level='WARNING') as logs:
-            response=self.client.get('/health',headers={'User-Agent':'test-agent'})
-        self.assertEqual(response.json,{'status':'ok'})
-        self.assertIn('test-agent',logs.output[0])

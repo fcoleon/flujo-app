@@ -398,9 +398,10 @@ def task_attachments(task_id):
                 c.rollback(); return respond({'error':'Sin acceso'},403)
             attachment_id=str(uuid.uuid4())
             c.execute('INSERT INTO task_attachments VALUES(?,?,?,?,?,?,?)',(attachment_id,task_id,u['id'],name,key,len(content),now()))
+            count=c.execute('SELECT COUNT(*) FROM task_attachments WHERE task_id=?',(task_id,)).fetchone()[0]
             c.execute('DELETE FROM avatar_cleanup WHERE key=?',(key,)); c.commit()
             avatars.cleanup(c,SETTINGS['backblaze'])
-            return respond({'id':attachment_id,'name':name})
+            return respond({'id':attachment_id,'name':name,'attachment_count':count})
         except avatars.StorageError:
             app.logger.exception('Error al guardar adjunto')
             return respond({'error':'No se pudo guardar el archivo'},503)
@@ -423,9 +424,10 @@ def attachment(attachment_id):
             flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone() if u else None
             if not row or not u or flags['blocked'] or flags['must_change_password'] or not can_task(c,u,row['task_id'],True):
                 c.rollback(); return respond({'error':'Sin acceso'},403)
-            c.execute('DELETE FROM task_attachments WHERE id=?',(attachment_id,)); c.commit()
+            c.execute('DELETE FROM task_attachments WHERE id=?',(attachment_id,))
+            count=c.execute('SELECT COUNT(*) FROM task_attachments WHERE task_id=?',(row['task_id'],)).fetchone()[0]; c.commit()
             avatars.cleanup(c,SETTINGS['backblaze'])
-            return respond({'ok':True})
+            return respond({'ok':True,'attachment_count':count})
         if not can_task(c,u,row['task_id']): return respond({'error':'Sin acceso'},403)
         try:
             obj=avatars.client(SETTINGS['backblaze']).get_object(Bucket=SETTINGS['backblaze']['bucket'],Key=row['storage_key'])
@@ -466,8 +468,9 @@ def api_get():
                         d['members']=[dict(x) for x in c.execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=?',(p['id'],))]
                         projects.append(d)
                 allowed={p['id'] for p in projects}; tasks=[]
-                for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count FROM tasks t
+                for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count,COALESCE(a.attachment_count,0) AS attachment_count FROM tasks t
                                       LEFT JOIN (SELECT task_id,COUNT(*) AS comment_count FROM comments GROUP BY task_id) cm ON cm.task_id=t.id
+                                      LEFT JOIN (SELECT task_id,COUNT(*) AS attachment_count FROM task_attachments GROUP BY task_id) a ON a.task_id=t.id
                                       ORDER BY t.id DESC''').fetchall():
                     placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
                     if can_task(c,u,t['id']):
