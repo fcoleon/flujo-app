@@ -520,8 +520,8 @@ function statusButton(t,editable,detail=false){
   if(!editable)return detail?`<span class="detail-value">${visual}</span>`:visual;
   return `<button type="button" class="quick-control status-trigger ${detail?'detail-control':''}" aria-label="Cambiar estado de ${esc(t.title)}" aria-haspopup="menu" aria-expanded="false" onclick="openStatusMenu(event,${t.id},${detail})" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation();event.preventDefault()"><span class="${detail?'detail-value':''}" aria-hidden="true">${visual}</span></button>`;
 }
-function assigneeButton(t,editable,detail=false){
-  let user=data.users.find(u=>u.id===t.assignee_id),visual=detail?taskPropertyVisual('assignee_id',t,editable):user?avatar(user.name):'<span class="avatar empty-avatar">＋</span>';
+function assigneeButton(t,editable,detail=false,showName=false){
+  let user=data.users.find(u=>u.id===t.assignee_id),visual=detail||showName?taskPropertyVisual('assignee_id',t,editable):user?avatar(user.name):'<span class="avatar empty-avatar">＋</span>';
   if(!editable)return detail?`<span class="detail-value">${visual}</span>`:visual;
   return `<button type="button" class="quick-control status-trigger ${detail?'detail-control':''}" aria-label="Cambiar responsable de ${esc(t.title)}" aria-haspopup="menu" aria-expanded="false" onclick="openStatusMenu(event,${t.id},${detail},'assignee')" onpointerdown="event.stopPropagation()" ondragstart="event.stopPropagation();event.preventDefault()"><span class="${detail?'detail-value':''}" aria-hidden="true">${visual}</span></button>`;
 }
@@ -544,7 +544,7 @@ function openStatusMenu(e,id,detail,field='status'){
     event.stopPropagation();let option=event.target.closest('.status-option');if(!option)return;
     let value=option.dataset.value,property=field==='status'?'status':field==='priority'?'priority':'assignee_id';closeStatusMenu(true);if(value===String((field==='status'?task.status_id:task[property])??''))return;
     if(detail){let control=trigger.closest('form')?.querySelector(field==='status'?'#taskStatusSelect':field==='priority'?'#taskPrioritySelect':'#taskAssigneeSelect');if(control){control.value=value;await saveTaskField(id,property,control)}}
-    else{trigger.disabled=true;try{if(field==='status')await api('task/type-status',{id,type_id:task.type_id,status_id:Number(value)});else await api('task/update',{id,[property]:value});await refresh()}catch(err){trigger.disabled=false;toast(err.message)}}
+    else{let subtaskList=trigger.closest?.('#subtaskList');trigger.disabled=true;try{if(field==='status')await api('task/type-status',{id,type_id:task.type_id,status_id:Number(value)});else await api('task/update',{id,[property]:value});await refresh();if(subtaskList?.isConnected)subtaskList.innerHTML=renderSubtasks(data.tasks.filter(t=>t.parent_id===taskId))}catch(err){trigger.disabled=false;toast(err.message)}}
   });
   menu.addEventListener('keydown',event=>{
     let options=[...menu.querySelectorAll('.status-option')],index=options.indexOf(document.activeElement);
@@ -827,12 +827,11 @@ function newUser(){
 async function setMember(id,role,select){let projectId=active,p=data.projects.find(x=>x.id===projectId),previous=p.members.find(m=>m.id===id)?.role||'remove';select.disabled=true;try{await api('members',{project_id:projectId,user_id:id,role});await refresh();let updated=data.projects.find(x=>x.id===projectId);if(!updated||updated.role!=='admin'){boardView='board';closeModal();render();toast('Tu acceso al proyecto cambió')}else{select.disabled=false;toast('Acceso actualizado')}}catch(e){select.value=previous;select.disabled=false;toast(e.message)}}
 
 function taskPropertyVisual(field,t,editable){
-  let arrow=editable?' <span class="quick-chevron">⌄</span>':'';
-  if(field==='assignee_id'){let user=data.users.find(u=>u.id===t.assignee_id);return `<span class="detail-person">${user?avatar(user.name):'<span class="avatar empty-avatar">＋</span>'}<span>${user?esc(user.name):'Sin asignar'}</span>${arrow}</span>`}
+  if(field==='assignee_id'){let user=data.users.find(u=>u.id===t.assignee_id);return `<span class="detail-person">${user?avatar(user.name):'<span class="avatar empty-avatar">＋</span>'}<span>${user?esc(user.name):'Sin asignar'}</span></span>`}
   if(field==='due_date')return `<span class="date-value"><span class="detail-date-icon">◷</span> &nbsp; ${esc(t.due_date||'Sin fecha')}</span>`;
-  if(field==='priority')return `<span class="priority ${t.priority==='Alta'?'high':t.priority==='Baja'?'low':''}">${esc(t.priority)}${arrow}</span>`;
-  if(field==='type')return `<span class="detail-type">${esc(taskTypeLabel(t.task_type,t))}${arrow}</span>`;
-  let status=taskStatus(t);return status?`<span class="status-badge" style="--status-color:${esc(status.color)}"><i></i><span class="status-name">${esc(status.name)}</span>${arrow}</span>`:'';
+  if(field==='priority')return `<span class="priority ${t.priority==='Alta'?'high':t.priority==='Baja'?'low':''}">${esc(t.priority)}</span>`;
+  if(field==='type')return `<span class="detail-type">${esc(taskTypeLabel(t.task_type,t))}</span>`;
+  let status=taskStatus(t);return status?`<span class="status-badge" style="--status-color:${esc(status.color)}"><i></i><span class="status-name">${esc(status.name)}</span></span>`:'';
 }
 function renderTaskProperties(t,editable){
   let disabled=editable?'':'disabled',change=field=>`onchange="saveTaskField(${t.id},'${field}',this)"`,visual=field=>`<span class="detail-value" aria-hidden="true">${taskPropertyVisual(field,t,editable)}</span>`;
@@ -1016,7 +1015,7 @@ function addDescriptionLink(link=null){
 function pasteDescription(e){e.preventDefault();document.execCommand('insertText',false,e.clipboardData.getData('text/plain'))}
 
 async function taskProject(id,p,remove){if(taskDraft&&!await flushTaskDraft())return;try{await api('task/project',{id,project_id:p,remove});await refresh();let task=data.tasks.find(t=>t.id===id);if(task){if(!task.has_projects&&active!=='mine'){active=0;boardView='board';filter='';if(!isTaskPath(location.pathname))setBoardUrl(0,true);render()}await openTask(id)}else{closeModal();toast('La tarea ya no está disponible para tu usuario')}}catch(e){toast(e.message)}}
-function renderSubtasks(subs){return subs.map(s=>`<button type="button" class="subtask" onclick="openTask(${s.id})">◯ &nbsp; ${esc(s.title)} <span>→</span></button>`).join('')||'<p class="muted">Aún no hay subtareas.</p>'}
+function renderSubtasks(subs){let project=data.projects.find(p=>p.id===active);return subs.map(s=>{let editable=s.can_edit&&(!project||project.role!=='viewer'),status=taskStatus(s);return `<div class="subtask"><button type="button" class="subtask-title" onclick="openTask(${s.id})"><span class="subtask-dot" ${status?`style="background:${esc(status.color)}"`:''} aria-hidden="true"></span>${esc(s.title)}</button><div class="subtask-meta">${status?statusButton(s,editable):''}${assigneeButton(s,editable,false,true)}</div><button type="button" class="subtask-arrow" aria-label="Abrir ${esc(s.title)}" onclick="openTask(${s.id})">→</button></div>`}).join('')||'<p class="muted">Aún no hay subtareas.</p>'}
 function newSubtask(){let form=$('#subtaskForm');if(!form)return;$('#addSubtask').hidden=true;form.hidden=false;form.elements.title.focus()}
 function setupSubtaskForm(id){
   let form=$('#subtaskForm'),input=form.elements.title,button=form.querySelector('button'),add=$('#addSubtask');
