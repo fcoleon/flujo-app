@@ -3,7 +3,7 @@ limit_req_zone $binary_remote_addr zone=flujo_login:10m rate=5r/m;
 server {
     listen 80;
     server_name @@SERVER_NAME@@;
-    client_max_body_size 2200k;
+    client_max_body_size 11m;
 
     # BEGIN flujo-app assets
     location ^~ /static/ {
