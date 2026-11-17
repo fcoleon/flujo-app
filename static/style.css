@@ -175,3 +175,19 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
   .task-dialog:has(#taskForm) .task-property[data-property=status]>.status-trigger,.task-dialog:has(#taskForm) .task-property[data-property=status]>.detail-value{grid-column:1}
   .task-dialog:has(#taskForm) .task-property[data-property=status]>.status-times{grid-column:2}
 }
+.avatar { position: relative; }
+.avatar img { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+.profile-avatar { margin-bottom: 20px; }
+.profile-avatar-row { display: flex; align-items: center; gap: 16px; }
+.profile-avatar .avatar { width: 64px; height: 64px; font-size: 24px; }
+.profile-avatar-picker { position: relative; display: block; padding: 0; border: 0; border-radius: 50%; background: none; }
+.profile-avatar-picker:focus-visible { outline: 2px solid #7359d8; outline-offset: 3px; }
+.profile-avatar-overlay { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 50%; background: #0009; color: white; font-size: 10px; opacity: 0; transition: opacity .15s; }
+.profile-avatar-picker:hover .profile-avatar-overlay, .profile-avatar-picker:focus-visible .profile-avatar-overlay { opacity: 1; }
+.dialog .profile-avatar input[hidden] { display: none; }
+.profile-avatar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.profile-avatar-actions #avatarRemove:hover { background: #fff3f3; border-color: #ead4d4; color: #a83e3e; }
+.profile-avatar-actions [hidden] { display: none; }
+.profile-avatar small { display: block; margin-top: 8px; }
+.cancel-button:hover:not(:disabled), .slack-dialog .cancel-button:hover:not(:disabled) { background: #f1f0f2; border-color: #d8d6dc; color: #625e6d; }
+.cancel-button:focus-visible { outline: 2px solid #8e8998; outline-offset: 2px; }
