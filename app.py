@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import analytics as metrics
 import automations
 from contextlib import closing
-from flask import Flask, g, jsonify, make_response, request, send_from_directory, abort, render_template_string
+from flask import Flask, g, jsonify, make_response, request, send_from_directory, abort, render_template_string, redirect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from descriptions import DescriptionSanitizer, sanitize_description
 from auth import hashpw, current_user, session_response, create_session, rotate_session, SESSION_SECONDS
@@ -83,6 +83,9 @@ def init():
             c.execute('ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0')
         if 'must_change_password' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
             c.execute('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0')
+        if 'avatar_key' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
+            c.execute('ALTER TABLE users ADD COLUMN avatar_key TEXT')
+        c.execute('CREATE TABLE IF NOT EXISTS avatar_cleanup(key TEXT PRIMARY KEY, created_at INTEGER NOT NULL)')
         c.executescript('''CREATE TABLE IF NOT EXISTS task_types(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, is_base INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS task_statuses(id INTEGER PRIMARY KEY AUTOINCREMENT, type_id INTEGER NOT NULL REFERENCES task_types(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, is_done INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL);''')
         cols={r['name'] for r in c.execute('PRAGMA table_info(tasks)')}
@@ -315,6 +318,45 @@ def static_asset(filename):
 def api_dispatch(route):
     return api_get() if request.method=='GET' else api_post()
 
+@app.route('/api/avatar', methods=['POST'])
+def avatar_upload():
+    import avatars
+    request.max_content_length=2*1024*1024+65536
+    request.max_form_parts=4
+    if request.headers.get('X-Flujo-Request')!='avatar': return respond({'error':'Solicitud inválida'},403)
+    with closing(db()) as c:
+        u=current_user(c)
+        if not u: return respond({'error':'Inicia sesión'},401)
+        flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
+        if flags['blocked'] or flags['must_change_password']: return respond({'error':'Sin acceso'},403)
+        if not all(SETTINGS['backblaze'].values()): return respond({'error':'Fotos de perfil no configuradas'},503)
+        if request.mimetype!='multipart/form-data' or set(request.files)!= {'avatar'}: return respond({'error':'Selecciona una imagen'},400)
+        try:
+            image=avatars.process(request.files['avatar'].stream)
+            avatars.save(c,u['id'],request.cookies.get('session',''),image,SETTINGS['backblaze'])
+            return respond({'ok':True})
+        except ValueError as e: return respond({'error':str(e)},400)
+        except avatars.StorageError:
+            app.logger.exception('Error de almacenamiento de avatar')
+            return respond({'error':'No se pudo guardar la foto'},503)
+
+@app.get('/api/avatar/<int:user_id>')
+def avatar_get(user_id):
+    import avatars
+    with closing(db()) as c:
+        u=current_user(c)
+        if not u: return respond({'error':'Inicia sesión'},401)
+        flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
+        if flags['blocked'] or flags['must_change_password']: return respond({'error':'Sin acceso'},403)
+        row=c.execute('SELECT avatar_key FROM users WHERE id=?',(user_id,)).fetchone()
+        if not row or not row['avatar_key'] or not all(SETTINGS['backblaze'].values()): abort(404)
+        try: url=avatars.signed_url(row['avatar_key'],SETTINGS['backblaze'])
+        except avatars.StorageError: return respond({'error':'Foto no disponible'},503)
+        response=redirect(url,302)
+        response.headers['Cache-Control']='private, no-store'
+        response.headers['Referrer-Policy']='no-referrer'
+        return response
+
 def api_get():
     path=request.path
     try:
@@ -350,7 +392,7 @@ def api_get():
                         status_entry=c.execute('SELECT created_at,message FROM history WHERE task_id=? AND status_id IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1',(t['id'],)).fetchone()
                         d['status_since']=status_entry['created_at'] if status_entry else None; d['status_since_partial']=bool(status_entry and status_entry['message']=='inicio del registro de tiempo por estado')
                         d['status_previous_seconds'],d['status_total_partial']=metrics.previous_status_time(c,t['id'],t['status_id']); tasks.append(d)
-                return respond({'user':dict(u),'version':VERSION,'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
+                return respond({'user':dict(u),'version':VERSION,'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
             if path=='/api/analytics':
                 params=request.args.to_dict(flat=False); p=int(params['project_id'][0]); month=params['month'][0]
                 if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)
@@ -429,6 +471,10 @@ def api_post():
                 return session_response(token)
             if flags['must_change_password']:
                 return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
+            if path=='/api/avatar/delete':
+                import avatars
+                avatars.remove(c,u['id'],SETTINGS['backblaze'])
+                return respond({'ok':True})
             g.disabled_automations=[]
             if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete','/api/tokens','/api/tokens/revoke'):
                 c.execute('BEGIN IMMEDIATE')

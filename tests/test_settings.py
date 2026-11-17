@@ -44,6 +44,9 @@ class SettingsTest(unittest.TestCase):
                 config.write_text(contents)
                 with self.subTest(contents=contents), self.assertRaises(ValueError):
                     load_settings(config,environ={})
+            config.write_text('[app]\n[backblaze]\nbucket=solo\n')
+            with self.assertRaisesRegex(ValueError,'Backblaze'):
+                load_settings(config,environ={})
 
 
 if __name__ == '__main__':

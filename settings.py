@@ -46,4 +46,6 @@ def load_settings(config_path=None, environ=None):
     if not socket_path.is_absolute() or not values['socket'].strip():
         raise ValueError('La ruta del socket debe ser absoluta')
     slack = {key: parser.get('slack', key, fallback='').strip() for key in ('client_id', 'client_secret', 'base_url')}
-    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'socket': str(socket_path), 'allow_self_registration': allow_self_registration, 'config_path': str(path), 'slack': slack, 'slack_base_url': slack['base_url']}
+    backblaze = {key: parser.get('backblaze', key, fallback='').strip() for key in ('endpoint', 'region', 'bucket', 'key_id', 'application_key')}
+    if any(backblaze.values()) and not all(backblaze.values()): raise ValueError('Completa toda la configuración de Backblaze')
+    return {'database': str(database.resolve()), 'port': port, 'timezone': values['timezone'], 'socket': str(socket_path), 'allow_self_registration': allow_self_registration, 'config_path': str(path), 'slack': slack, 'slack_base_url': slack['base_url'], 'backblaze': backblaze}
