@@ -38,7 +38,7 @@ eval(`{
   reduced=false;showHint();assert(!hint.hidden&&classes.has('is-entering'),'entrada visible');
   hideHint(false);assert(classes.has('is-leaving')&&timer.delay===200,'salida breve');
   showHint();assert(!hint.hidden&&classes.has('is-entering')&&!timer,'reingresar cancela salida');
-  hideHint(true);assert(classes.has('is-dropped')&&timer.delay===700,'soltar anima 700 ms');
+  hideHint(true);assert(classes.has('is-dropped')&&timer.delay===400,'soltar anima 400 ms');
   timer.fn();assert(hint.hidden,'oculta tras animación');
   reduced=true;showHint();hideHint(true);assert(hint.hidden,'movimiento reducido oculta inmediatamente');
 }`);

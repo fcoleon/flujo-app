@@ -196,10 +196,14 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .profile-avatar small { display: block; margin-top: 8px; }
 .cancel-button:hover:not(:disabled), .slack-dialog .cancel-button:hover:not(:disabled) { background: #f1f0f2; border-color: #d8d6dc; color: #625e6d; }
 .cancel-button:focus-visible { outline: 2px solid #8e8998; outline-offset: 2px; }
-.attachment-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.attachment-list { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; gap: 8px; }
+.attachment-add-control { position: relative; flex: none; border: 0; border-radius: 5px; cursor: pointer; }
+.attachment-add-control:focus-visible { outline: 2px solid #a591e3; outline-offset: 2px; }
+.attachment-add-control::after { content: attr(data-tooltip); position: absolute; z-index: 20; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%); padding: 6px 8px; border-radius: 5px; background: #29263a; color: #fff; font: 600 11px/1.2 'DM Sans', sans-serif; white-space: nowrap; opacity: 0; visibility: hidden; pointer-events: none; }
+.attachment-add-control:hover::after, .attachment-add-control:focus-visible::after { opacity: 1; visibility: visible; }
 .dialog .attachments input[hidden] { display: none; }
-.attachment-card { position: relative; width: 165px; border: 1px solid #e8e6eb; border-radius: 8px; background: #fff; font-size: 12px; }
-.attachment-card summary, .attachment-pending { padding: 10px 12px; }
+.attachment-card { position: relative; width: 150px; max-width: 100%; border: 1px solid #e8e6eb; border-radius: 8px; background: #fff; font-size: 12px; }
+.attachment-card summary, .attachment-pending { padding: 7px 10px; }
 .attachment-card summary { cursor: pointer; list-style: none; }
 .attachment-card summary::-webkit-details-marker { display: none; }
 .attachment-card summary:hover { background: #f7f5fb; border-radius: 8px; }
@@ -219,7 +223,7 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .attachment-drop-hint[hidden] { display: none; }
 .attachment-drop-hint.is-entering { animation: attachment-hint-in .2s ease-out both; }
 .attachment-drop-hint.is-leaving { animation: attachment-hint-out .2s ease-in both; }
-.attachment-drop-hint.is-dropped { animation: attachment-hint-drop .7s ease-in both; }
+.attachment-drop-hint.is-dropped { animation: attachment-hint-drop .4s ease-in both; }
 @keyframes attachment-hint-in { from { opacity: 0; transform: scale(.98); } }
 @keyframes attachment-hint-out { to { opacity: 0; transform: scale(.98); } }
 @keyframes attachment-hint-drop { to { opacity: 0; transform: scale(.85); } }
