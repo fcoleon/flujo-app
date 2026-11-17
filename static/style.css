@@ -167,7 +167,7 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .task-property[data-property=status]{display:grid;grid-template-columns:95px minmax(0,max-content) minmax(0,1fr);gap:0 10px;align-items:center}
 .task-property[data-property=status]>.task-property-label{grid-column:1}
 .task-property[data-property=status]>.status-trigger,.task-property[data-property=status]>.detail-value{grid-column:2;max-width:100%}
-.task-property[data-property=status]>.status-times{grid-column:3;padding:0;min-width:0;line-height:1.5}
+.task-property[data-property=status]>.status-times{grid-column:3;padding:0;min-width:0;line-height:1.5}.status-times span{white-space:nowrap}
 @media(max-width:600px){
   .task-dialog:has(#taskForm) .task-property[data-property=status]{grid-column:1/-1;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:0 10px}
   .task-dialog:has(#taskForm) .task-property[data-property=status]>.task-property-label{grid-column:1/-1}
