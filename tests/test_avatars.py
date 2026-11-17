@@ -91,3 +91,22 @@ class AvatarTest(unittest.TestCase):
     def test_request_size_is_limited(self):
         self.assertEqual(self.upload(io.BytesIO(b'x'*(2*1024*1024+65537))).status_code,413)
         self.assertFalse(self.s3.put_object.called)
+
+    def test_cached_url_still_checks_session_and_changes_with_photo(self):
+        from cache import Cache
+        cache=Cache({'type':'memcached','host':'localhost','port':11211})
+        values={}
+        def call(operation,key,value=None,ttl=None):
+            if operation=='get': return values.get(key)
+            values[key]=value
+        with patch.object(app,'CACHE',cache),patch.object(cache,'_call',side_effect=call):
+            self.assertEqual(self.upload(self.picture()).status_code,200)
+            self.assertEqual(self.client.get('/api/avatar/1').status_code,302)
+            self.assertEqual(self.client.get('/api/avatar/1').status_code,302)
+            self.assertEqual(self.s3.generate_presigned_url.call_count,1)
+            self.assertEqual(app.app.test_client().get('/api/avatar/1').status_code,401)
+            self.assertEqual(self.upload(self.picture()).status_code,200)
+            self.assertEqual(self.client.get('/api/avatar/1').status_code,302)
+            self.assertEqual(self.s3.generate_presigned_url.call_count,2)
+            with app.db() as c: c.execute('UPDATE users SET blocked=1 WHERE id=1')
+            self.assertEqual(self.client.get('/api/avatar/1').status_code,403)

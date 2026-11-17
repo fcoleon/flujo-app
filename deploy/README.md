@@ -47,6 +47,23 @@ La plantilla Nginx nueva admite solicitudes de hasta 11 MiB. En instalaciones ex
 
 Cada adjunto admite hasta 10 MiB y se descarga como archivo binario, sin vista previa ni análisis antivirus. Los archivos antiguos se agregan a la misma cola de limpieza de versiones descrita para fotos; respalda SQLite y el bucket de forma coordinada.
 
+### Caché opcional
+
+Flujo puede reutilizar las URLs firmadas de fotos en Redis o Memcached, compartiendo la caché entre los workers. Agrega en `[app]` `cache = redis` o `cache = memcached`; si se omite o queda vacío, funciona sin caché. Configura el proveedor seleccionado:
+
+```ini
+[redis]
+url = redis://127.0.0.1:6379/0
+
+[memcached]
+host = 127.0.0.1
+port = 11211
+```
+
+Instala y administra por separado el servicio elegido y reinicia Flujo tras modificar la configuración. Para Redis también se admite `rediss://` o `unix://`. La configuración puede contener credenciales: protege `config.ini` y no lo subas a Git. La caché contiene enlaces privados temporales: mantenla accesible únicamente a servicios de confianza; no expongas Memcached a Internet. Para conexiones Redis por red usa autenticación y TLS cuando corresponda.
+
+Los enlaces se guardan por cuatro minutos, menos que los cinco minutos de validez de la firma; Redis o Memcached los eliminan al vencer. Cada solicitud sigue comprobando la sesión antes de consultar la caché. Si esta no responde, Flujo genera el enlace sin caché y registra una advertencia. No se garantiza que solicitudes simultáneas para una misma foto generen una sola firma.
+
 ## Primera instalación
 
 ```sh

@@ -10,6 +10,18 @@ from settings import ROOT, load_settings
 
 
 class SettingsTest(unittest.TestCase):
+    def test_cache_provider_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config=Path(tmp)/'config.ini'
+            config.write_text('[app]\n')
+            self.assertEqual(load_settings(config,environ={})['cache'],{'type':''})
+            config.write_text('[app]\ncache=redis\n[redis]\nurl=redis://localhost:6379/0\n')
+            self.assertEqual(load_settings(config,environ={})['cache']['type'],'redis')
+            config.write_text('[app]\ncache=memcached\n[memcached]\nhost=localhost\nport=11211\n')
+            self.assertEqual(load_settings(config,environ={})['cache']['port'],11211)
+            for contents in ('[app]\ncache=otro\n','[app]\ncache=redis\n[redis]\nurl=redis://\n','[app]\ncache=memcached\n[memcached]\nhost=localhost\nport=99999\n'):
+                config.write_text(contents)
+                with self.subTest(contents=contents),self.assertRaises(ValueError): load_settings(config,environ={})
     def test_application_uses_same_ini_settings_as_supervisor(self):
         with tempfile.TemporaryDirectory() as tmp:
             config=Path(tmp)/'config.ini';database=Path(tmp)/'tasks.db'

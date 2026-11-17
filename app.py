@@ -11,8 +11,10 @@ from auth import hashpw, current_user, session_response, create_session, rotate_
 import time
 from pathlib import Path
 from settings import load_settings
+from cache import Cache
 
 SETTINGS = load_settings()
+CACHE = Cache(SETTINGS['cache'])
 DB = SETTINGS['database']
 PORT = SETTINGS['port']
 STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
@@ -356,7 +358,9 @@ def avatar_get(user_id):
         if flags['blocked'] or flags['must_change_password']: return respond({'error':'Sin acceso'},403)
         row=c.execute('SELECT avatar_key FROM users WHERE id=?',(user_id,)).fetchone()
         if not row or not row['avatar_key'] or not all(SETTINGS['backblaze'].values()): abort(404)
-        try: url=avatars.signed_url(row['avatar_key'],SETTINGS['backblaze'])
+        storage=SETTINGS['backblaze']
+        cache_key='flujo:avatar:'+hashlib.sha256(json.dumps([storage[k] for k in ('endpoint','region','bucket','key_id','application_key')]+[row['avatar_key']]).encode()).hexdigest()
+        try: url=CACHE.get_or_create(cache_key,lambda:avatars.signed_url(row['avatar_key'],storage),240)
         except avatars.StorageError: return respond({'error':'Foto no disponible'},503)
         response=redirect(url,302)
         response.headers['Cache-Control']='private, no-store'
