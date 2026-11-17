@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import analytics as metrics
 import automations
 from contextlib import closing
-from flask import Flask, g, jsonify, make_response, request, send_from_directory, abort, render_template_string
+from flask import Flask, g, jsonify, make_response, request, send_from_directory, send_file, abort, render_template_string, redirect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from descriptions import DescriptionSanitizer, sanitize_description
 from auth import hashpw, current_user, session_response, create_session, rotate_session, SESSION_SECONDS
@@ -83,6 +83,15 @@ def init():
             c.execute('ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0')
         if 'must_change_password' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
             c.execute('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0')
+        if 'avatar_key' not in {r['name'] for r in c.execute('PRAGMA table_info(users)')}:
+            c.execute('ALTER TABLE users ADD COLUMN avatar_key TEXT')
+        c.execute('CREATE TABLE IF NOT EXISTS avatar_cleanup(key TEXT PRIMARY KEY, created_at INTEGER NOT NULL)')
+        c.execute('''CREATE TABLE IF NOT EXISTS task_attachments(
+                     id TEXT PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, name TEXT NOT NULL,
+                     storage_key TEXT NOT NULL UNIQUE, size INTEGER NOT NULL, created_at TEXT NOT NULL)''')
+        c.execute('''CREATE TRIGGER IF NOT EXISTS attachment_cleanup AFTER DELETE ON task_attachments
+                     BEGIN INSERT OR IGNORE INTO avatar_cleanup(key,created_at) VALUES(OLD.storage_key,CAST(strftime('%s','now') AS INTEGER)); END''')
         c.executescript('''CREATE TABLE IF NOT EXISTS task_types(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, is_base INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS task_statuses(id INTEGER PRIMARY KEY AUTOINCREMENT, type_id INTEGER NOT NULL REFERENCES task_types(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, is_done INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL);''')
         cols={r['name'] for r in c.execute('PRAGMA table_info(tasks)')}
@@ -140,7 +149,7 @@ def init():
                 c.execute(f'ALTER TABLE tasks ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0')
         c.execute('CREATE TABLE IF NOT EXISTS data_revision(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)')
         c.execute('INSERT OR IGNORE INTO data_revision VALUES(1,0)')
-        for table in ('users','projects','members','columns','tasks','placements','history','comments','task_types','task_statuses','automation_rules','automation_runs','metric_events','app_meta'):
+        for table in ('users','projects','members','columns','tasks','placements','history','comments','task_types','task_statuses','automation_rules','automation_runs','metric_events','app_meta','task_attachments'):
             for action in ('INSERT','UPDATE','DELETE'):
                 c.execute(f'''CREATE TRIGGER IF NOT EXISTS revision_{table}_{action.lower()} AFTER {action} ON {table}
                               BEGIN UPDATE data_revision SET revision=revision+1 WHERE id=1; END''')
@@ -315,6 +324,125 @@ def static_asset(filename):
 def api_dispatch(route):
     return api_get() if request.method=='GET' else api_post()
 
+@app.route('/api/avatar', methods=['POST'])
+def avatar_upload():
+    import avatars
+    request.max_content_length=2*1024*1024+65536
+    request.max_form_parts=4
+    if request.headers.get('X-Flujo-Request')!='avatar': return respond({'error':'Solicitud inválida'},403)
+    with closing(db()) as c:
+        u=current_user(c)
+        if not u: return respond({'error':'Inicia sesión'},401)
+        flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
+        if flags['blocked'] or flags['must_change_password']: return respond({'error':'Sin acceso'},403)
+        if not all(SETTINGS['backblaze'].values()): return respond({'error':'Fotos de perfil no configuradas'},503)
+        if request.mimetype!='multipart/form-data' or set(request.files)!= {'avatar'}: return respond({'error':'Selecciona una imagen'},400)
+        try:
+            image=avatars.process(request.files['avatar'].stream)
+            avatars.save(c,u['id'],request.cookies.get('session',''),image,SETTINGS['backblaze'])
+            return respond({'ok':True})
+        except ValueError as e: return respond({'error':str(e)},400)
+        except avatars.StorageError:
+            app.logger.exception('Error de almacenamiento de avatar')
+            return respond({'error':'No se pudo guardar la foto'},503)
+
+@app.get('/api/avatar/<int:user_id>')
+def avatar_get(user_id):
+    import avatars
+    with closing(db()) as c:
+        u=current_user(c)
+        if not u: return respond({'error':'Inicia sesión'},401)
+        flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
+        if flags['blocked'] or flags['must_change_password']: return respond({'error':'Sin acceso'},403)
+        row=c.execute('SELECT avatar_key FROM users WHERE id=?',(user_id,)).fetchone()
+        if not row or not row['avatar_key'] or not all(SETTINGS['backblaze'].values()): abort(404)
+        try: url=avatars.signed_url(row['avatar_key'],SETTINGS['backblaze'])
+        except avatars.StorageError: return respond({'error':'Foto no disponible'},503)
+        response=redirect(url,302)
+        response.headers['Cache-Control']='private, no-store'
+        response.headers['Referrer-Policy']='no-referrer'
+        return response
+
+@app.route('/api/tasks/<int:task_id>/attachments', methods=['GET','POST'])
+def task_attachments(task_id):
+    import avatars
+    if request.method=='POST':
+        request.max_content_length=10*1024*1024+65536
+        request.max_form_parts=4
+        if request.headers.get('X-Flujo-Request')!='attachment': return respond({'error':'Solicitud inválida'},403)
+    with closing(db()) as c:
+        u=current_user(c)
+        if not u: return respond({'error':'Inicia sesión'},401)
+        flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
+        if flags['blocked'] or flags['must_change_password']: return respond({'error':'Sin acceso'},403)
+        if not all(SETTINGS['backblaze'].values()): return respond({'error':'Adjuntos no configurados'},503)
+        if not can_task(c,u,task_id,request.method=='POST'): return respond({'error':'Sin acceso'},403)
+        if request.method=='GET':
+            return respond({'attachments':[dict(r) for r in c.execute('SELECT id,name,size,created_at FROM task_attachments WHERE task_id=? ORDER BY created_at,id',(task_id,))]})
+        if request.mimetype!='multipart/form-data' or set(request.files)!={'file'} or len(request.files.getlist('file'))!=1:
+            return respond({'error':'Selecciona un archivo'},400)
+        f=request.files['file']
+        name=re.sub(r'[\x00-\x1f\x7f-\x9f/\\\\]','_',f.filename or '').strip()
+        if not name or len(name)>255: return respond({'error':'Nombre de archivo inválido'},400)
+        content=f.stream.read(10*1024*1024+1)
+        if not content: return respond({'error':'El archivo está vacío'},400)
+        if len(content)>10*1024*1024: return respond({'error':'El archivo supera 10 MiB'},413)
+        key='attachments/'+secrets.token_hex(32)
+        c.execute('INSERT INTO avatar_cleanup VALUES(?,?)',(key,int(time.time()))); c.commit()
+        try:
+            avatars.client(SETTINGS['backblaze']).put_object(Bucket=SETTINGS['backblaze']['bucket'],Key=key,Body=content,ContentType='application/octet-stream',CacheControl='private, no-store')
+            c.execute('BEGIN IMMEDIATE')
+            u=current_user(c)
+            flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone() if u else None
+            if not u or flags['blocked'] or flags['must_change_password'] or not can_task(c,u,task_id,True):
+                c.rollback(); return respond({'error':'Sin acceso'},403)
+            attachment_id=str(uuid.uuid4())
+            c.execute('INSERT INTO task_attachments VALUES(?,?,?,?,?,?,?)',(attachment_id,task_id,u['id'],name,key,len(content),now()))
+            count=c.execute('SELECT COUNT(*) FROM task_attachments WHERE task_id=?',(task_id,)).fetchone()[0]
+            c.execute('DELETE FROM avatar_cleanup WHERE key=?',(key,)); c.commit()
+            avatars.cleanup(c,SETTINGS['backblaze'])
+            return respond({'id':attachment_id,'name':name,'attachment_count':count})
+        except avatars.StorageError:
+            app.logger.exception('Error al guardar adjunto')
+            return respond({'error':'No se pudo guardar el archivo'},503)
+
+@app.route('/api/attachments/<attachment_id>',methods=['GET','POST'])
+def attachment(attachment_id):
+    import io, avatars
+    with closing(db()) as c:
+        u=current_user(c)
+        if not u: return respond({'error':'Inicia sesión'},401)
+        flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
+        if flags['blocked'] or flags['must_change_password']: return respond({'error':'Sin acceso'},403)
+        if not all(SETTINGS['backblaze'].values()): return respond({'error':'Adjuntos no configurados'},503)
+        row=c.execute('SELECT * FROM task_attachments WHERE id=?',(attachment_id,)).fetchone()
+        if not row: abort(404)
+        if request.method=='POST':
+            if request.mimetype!='application/json': return respond({'error':'Se requiere application/json'},415)
+            c.execute('BEGIN IMMEDIATE')
+            u=current_user(c); row=c.execute('SELECT * FROM task_attachments WHERE id=?',(attachment_id,)).fetchone()
+            flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone() if u else None
+            if not row or not u or flags['blocked'] or flags['must_change_password'] or not can_task(c,u,row['task_id'],True):
+                c.rollback(); return respond({'error':'Sin acceso'},403)
+            c.execute('DELETE FROM task_attachments WHERE id=?',(attachment_id,))
+            count=c.execute('SELECT COUNT(*) FROM task_attachments WHERE task_id=?',(row['task_id'],)).fetchone()[0]; c.commit()
+            avatars.cleanup(c,SETTINGS['backblaze'])
+            return respond({'ok':True,'attachment_count':count})
+        if not can_task(c,u,row['task_id']): return respond({'error':'Sin acceso'},403)
+        try:
+            obj=avatars.client(SETTINGS['backblaze']).get_object(Bucket=SETTINGS['backblaze']['bucket'],Key=row['storage_key'])
+            body=obj['Body']
+            try: content=body.read(10*1024*1024+1)
+            finally: body.close()
+            if len(content)>10*1024*1024: return respond({'error':'Archivo demasiado grande'},503)
+            response=send_file(io.BytesIO(content),mimetype='application/octet-stream',as_attachment=True,download_name=row['name'])
+            response.headers['X-Content-Type-Options']='nosniff'
+            response.headers['Cache-Control']='private, no-store'
+            return response
+        except avatars.StorageError:
+            app.logger.exception('Error al descargar adjunto')
+            return respond({'error':'No se pudo descargar el archivo'},503)
+
 def api_get():
     path=request.path
     try:
@@ -340,8 +468,9 @@ def api_get():
                         d['members']=[dict(x) for x in c.execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=?',(p['id'],))]
                         projects.append(d)
                 allowed={p['id'] for p in projects}; tasks=[]
-                for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count FROM tasks t
+                for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count,COALESCE(a.attachment_count,0) AS attachment_count FROM tasks t
                                       LEFT JOIN (SELECT task_id,COUNT(*) AS comment_count FROM comments GROUP BY task_id) cm ON cm.task_id=t.id
+                                      LEFT JOIN (SELECT task_id,COUNT(*) AS attachment_count FROM task_attachments GROUP BY task_id) a ON a.task_id=t.id
                                       ORDER BY t.id DESC''').fetchall():
                     placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
                     if can_task(c,u,t['id']):
@@ -350,7 +479,7 @@ def api_get():
                         status_entry=c.execute('SELECT created_at,message FROM history WHERE task_id=? AND status_id IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1',(t['id'],)).fetchone()
                         d['status_since']=status_entry['created_at'] if status_entry else None; d['status_since_partial']=bool(status_entry and status_entry['message']=='inicio del registro de tiempo por estado')
                         d['status_previous_seconds'],d['status_total_partial']=metrics.previous_status_time(c,t['id'],t['status_id']); tasks.append(d)
-                return respond({'user':dict(u),'version':VERSION,'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
+                return respond({'attachments_enabled':all(SETTINGS['backblaze'].values()),'user':dict(u),'version':VERSION,'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
             if path=='/api/analytics':
                 params=request.args.to_dict(flat=False); p=int(params['project_id'][0]); month=params['month'][0]
                 if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)
@@ -429,6 +558,10 @@ def api_post():
                 return session_response(token)
             if flags['must_change_password']:
                 return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
+            if path=='/api/avatar/delete':
+                import avatars
+                avatars.remove(c,u['id'],SETTINGS['backblaze'])
+                return respond({'ok':True})
             g.disabled_automations=[]
             if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete','/api/tokens','/api/tokens/revoke'):
                 c.execute('BEGIN IMMEDIATE')

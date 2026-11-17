@@ -26,6 +26,27 @@ allow_self_registration = false
 
 Con `allow_self_registration = false` solo se puede crear la primera cuenta o agregar usuarios desde una cuenta administradora. Si se cambia a `true`, cualquiera que pueda acceder a la aplicación podrá registrarse; reinicia Flujo para aplicar el cambio.
 
+### Fotos de perfil en Backblaze B2
+
+Crea un bucket **privado** y una application key restringida a ese bucket, con permisos para listar, leer, escribir y eliminar archivos y sus versiones. Agrega a `config.ini` (sin compartirlo ni incorporarlo a Git):
+
+```ini
+[backblaze]
+endpoint = https://s3.us-west-004.backblazeb2.com
+region = us-west-004
+bucket = nombre-del-bucket
+key_id = id-de-la-clave
+application_key = clave-secreta
+```
+
+Sustituye endpoint y región por los indicados para tu bucket en Backblaze. Instala las dependencias actualizadas y reinicia Flujo. Con los cinco campos vacíos, las fotos están desactivadas; una configuración incompleta impide el arranque. Protege `config.ini` para que solo lo lean los usuarios necesarios.
+
+Las imágenes se procesan en Flask y se guardan en B2. Los usuarios habilitados reciben enlaces de lectura válidos por cinco minutos; quien tenga uno puede usarlo hasta su vencimiento. Las imágenes reemplazadas o eliminadas se registran para limpieza de versiones: el reintento ocurre al guardar o quitar otra foto, después de al menos una hora; si no hay más operaciones, pueden permanecer almacenadas. Respalda la base y el bucket de forma coordinada.
+
+La plantilla Nginx nueva admite solicitudes de hasta 11 MiB. En instalaciones existentes o con `--skip-nginx`, configura `client_max_body_size 11m;` en el servidor o ubicación correspondiente y recarga Nginx tras comprobar la configuración. El límite de la foto es 2 MiB; las solicitudes JSON conservan su límite anterior.
+
+Cada adjunto admite hasta 10 MiB y se descarga como archivo binario, sin vista previa ni análisis antivirus. Los archivos antiguos se agregan a la misma cola de limpieza de versiones descrita para fotos; respalda SQLite y el bucket de forma coordinada.
+
 ## Primera instalación
 
 ```sh
