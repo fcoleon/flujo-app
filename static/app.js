@@ -6,7 +6,7 @@ const cardMotion=new WeakMap();
 let columnDrag=null, columnGhost=null, columnSource=null, columnSaving=false;
 const columnMotion=new WeakMap();
 let dataRequest=0, mutationEpoch=0, pendingMutations=0;
-async function api(path,body){if(body){mutationEpoch++;pendingMutations++}try{let r=await fetch('/api/'+path,{method:body?'POST':'GET',cache:'no-store',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(r.status===429)throw Error('Demasiados intentos. Espera un momento y vuelve a intentarlo.');let d=await r.json();if(!r.ok){if((d.blocked||d.password_change_required||r.status===401)&&taskDraft){clearTimeout(taskDraft.timer);taskDraft.denied=true;taskDraft.status.textContent='Acceso perdido; conserva y copia tu borrador';}else if(d.blocked)showBlocked();else if(d.password_change_required)showPasswordChange();let error=Error(d.error||'Ocurrió un error');error.status=r.status;error.conflict=d.conflict;throw error}if(d.disabled_automations?.length)showDisabledAutomations(d.disabled_automations);return d}finally{if(body){pendingMutations--;mutationEpoch++}}}
+async function api(path,body){if(body){mutationEpoch++;pendingMutations++}try{let r=await fetch('/api/'+path,{method:body?'POST':'GET',cache:'no-store',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(r.status===429)throw Error('Demasiados intentos. Espera un momento y vuelve a intentarlo.');let d=await r.json();if(!r.ok){if((d.blocked||d.password_change_required||r.status===401)&&taskDraft){clearTimeout(taskDraft.timer);clearTimeout(taskDraft.descriptionTimer);taskDraft.denied=true;taskDraft.status.textContent='Acceso perdido; conserva y copia tu borrador';}else if(d.blocked)showBlocked();else if(d.password_change_required)showPasswordChange();let error=Error(d.error||'Ocurrió un error');error.status=r.status;error.conflict=d.conflict;throw error}if(d.disabled_automations?.length)showDisabledAutomations(d.disabled_automations);return d}finally{if(body){pendingMutations--;mutationEpoch++}}}
 let disabledAutomationQueue=[],disabledAutomationDialog=null;
 function disabledAutomationItems(){return disabledAutomationQueue.map(rule=>`<li><strong>${esc(rule.name)}</strong> · ${esc(rule.project_name)}: ${esc(rule.reason)}</li>`).join('')}
 function showDisabledAutomations(rules){
@@ -59,7 +59,7 @@ async function closeModal(force=false,animate=!force,fromHistory=false){
   if(draft&&!force&&!await flushTaskDraft())return false;
   if(overlay!==container.querySelector('.overlay'))return true;
   if(overlay?.dataset.closing){if(force&&!animate)overlay.remove();return true}
-  closeStatusMenu();descriptionCodeCleanup?.();descriptionCodeCleanup=null;if(taskDraft===draft&&draft){clearTimeout(draft.timer);taskDraft=null}
+  closeStatusMenu();descriptionCodeCleanup?.();descriptionCodeCleanup=null;if(taskDraft===draft&&draft){clearTimeout(draft.timer);clearTimeout(draft.descriptionTimer);taskDraft=null}
   if(overlay&&animate&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){
     overlay.dataset.closing='true';overlay.inert=true;overlay.classList.add('is-closing');
     await waitForModalAnimation(overlay);
@@ -89,7 +89,7 @@ async function poll(){
       if(next.revision==null)throw Error('Revisión no disponible');
       if(request!==dataRequest||epoch!==mutationEpoch||pendingMutations||document.hidden)return;
       let task=next.tasks.find(t=>t.id===taskId),project=next.projects.find(p=>p.id===active);
-      if(taskDraft&&(!task||!task.can_edit||project?.role==='viewer')){clearTimeout(taskDraft.timer);taskDraft.denied=true;taskDraft.status.textContent='Sin permiso para guardar; conserva y copia tu borrador'}
+      if(taskDraft&&(!task||!task.can_edit||project?.role==='viewer')){clearTimeout(taskDraft.timer);clearTimeout(taskDraft.descriptionTimer);taskDraft.denied=true;taskDraft.status.textContent='Sin permiso para guardar; conserva y copia tu borrador'}
       // ponytail: postpone replacing interactive DOM until the user finishes; retry on the next poll.
       if(dragged||listDrag||columnDrag||statusDrag!==null||dragSaving||columnSaving||projectFilterPanel||statusMenu||document.querySelector('dialog[open]')||document.activeElement?.matches('input,textarea,select,[contenteditable="true"]')&&$('#app')?.contains(document.activeElement))return;
       if($('#modal .overlay')&&!$('#taskForm'))return;
@@ -927,25 +927,26 @@ function setupTaskAutosave(id,task,editable){
   let form=$('#taskForm'),title=form.elements.title,editor=$('#descriptionEditor'),status=$('#taskSaveStatus');
   setupDescriptionCodeCopy(editor);
   if(editable)editor.previousElementSibling.insertAdjacentHTML('beforeend','<button type="button" data-tooltip="Bloque de código" aria-label="Bloque de código" onmousedown="event.preventDefault()" onclick="formatDescription(\'formatBlock\',\'pre\')">&lt;/&gt;</button>');
-  let draft=taskDraft={id,title,editor,status,savedTitle:task.title,savedDescription:editor.innerHTML,titleVersion:task.title_version,descriptionVersion:task.description_version,timer:null,saving:null,conflict:false,denied:false};
-  function schedule(delay){clearTimeout(draft.timer);status.textContent='Cambios sin guardar';draft.timer=setTimeout(()=>flushTaskDraft(),delay)}
-  title.addEventListener('input',()=>schedule(1000));
-  title.addEventListener('blur',()=>flushTaskDraft());
-  editor.addEventListener('input',()=>schedule(2500));
+  let draft=taskDraft={id,title,editor,status,savedTitle:task.title,savedDescription:editor.innerHTML,titleVersion:task.title_version,descriptionVersion:task.description_version,timer:null,descriptionTimer:null,saving:null,conflict:false,denied:false};
+  title.addEventListener('input',()=>{clearTimeout(draft.timer);status.textContent='Cambios sin guardar';draft.timer=setTimeout(()=>flushTaskDraft(false),1000)});
+  title.addEventListener('blur',()=>flushTaskDraft(false));
+  editor.addEventListener('input',()=>{clearTimeout(draft.descriptionTimer);status.textContent=editor.innerHTML===draft.savedDescription&&title.value.trim()===draft.savedTitle?'Guardado':'Cambios sin guardar'});
+  editor.addEventListener('focus',()=>clearTimeout(draft.descriptionTimer));
+  editor.addEventListener('blur',()=>{clearTimeout(draft.descriptionTimer);if(editor.innerHTML!==draft.savedDescription)draft.descriptionTimer=setTimeout(()=>flushTaskDraft(true,false),2500)});
   if(editable)editor.addEventListener('keydown',descriptionCodeKeydown);
   if(editable){let linkWasEditing=false;editor.addEventListener('pointerdown',e=>{if(e.target.closest('a'))linkWasEditing=document.activeElement===editor});editor.addEventListener('click',e=>{let link=e.target.closest('a');if(link){e.preventDefault();if(linkWasEditing||e.detail===0&&document.activeElement===editor)addDescriptionLink(link);else{window.open(link.href,'_blank','noopener,noreferrer');editor.blur()}}linkWasEditing=false})}
   form.addEventListener('submit',e=>{e.preventDefault();title.blur();flushTaskDraft()});
 }
-async function flushTaskDraft(){
+async function flushTaskDraft(includeDescription=true,allowFocused=true){
   let draft=taskDraft;if(!draft)return true;
-  clearTimeout(draft.timer);
+  clearTimeout(draft.timer);if(includeDescription)clearTimeout(draft.descriptionTimer);
   if(draft.conflict||draft.denied)return false;
-  if(draft.saving){let ok=await draft.saving;return ok&&taskDraft===draft?flushTaskDraft():ok}
+  if(draft.saving){let ok=await draft.saving;return ok&&taskDraft===draft?flushTaskDraft(includeDescription,allowFocused):ok}
   let work=(async()=>{
     while(taskDraft===draft){
       let title=draft.title.value.trim(),description=draft.editor.innerHTML,payload={id:draft.id};
       if(title&&title!==draft.savedTitle)payload.title=title;
-      if(description!==draft.savedDescription){payload.description=description;payload.description_format='html'}
+      if(includeDescription&&(allowFocused||document.activeElement!==draft.editor)&&description!==draft.savedDescription){payload.description=description;payload.description_format='html'}
       if(!('title' in payload)&&!('description' in payload)){
         if(!title){draft.status.textContent='El nombre de la tarea es obligatorio';return false}
         return true;
@@ -960,10 +961,10 @@ async function flushTaskDraft(){
       if('description' in payload)draft.descriptionVersion=result.description_version;
       if('title' in payload)draft.savedTitle=title;
       if('description' in payload)draft.savedDescription=description;
-      try{await refresh()}catch{}
+      refresh().catch(()=>{});
       if(taskDraft!==draft)return true;
-      draft.status.textContent='Guardado';
-      try{await updateActivity(draft.id)}catch{}
+      draft.status.textContent=draft.editor.innerHTML===draft.savedDescription&&draft.title.value.trim()===draft.savedTitle?'Guardado':'Cambios sin guardar';
+      updateActivity(draft.id).catch(()=>{});
     }
     return true;
   })();
