@@ -90,4 +90,4 @@ def remove(c, user_id, settings):
 
 
 def signed_url(key, settings):
-    return client(settings).generate_presigned_url('get_object',Params={'Bucket':settings['bucket'],'Key':key},ExpiresIn=300)
+    return client(settings).generate_presigned_url('get_object',Params={'Bucket':settings['bucket'],'Key':key},ExpiresIn=3900)

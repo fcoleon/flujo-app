@@ -15,6 +15,7 @@ from cache import Cache
 
 SETTINGS = load_settings()
 CACHE = Cache(SETTINGS['cache'])
+CACHE_EPOCH = secrets.token_hex(16)
 DB = SETTINGS['database']
 PORT = SETTINGS['port']
 STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
@@ -360,7 +361,7 @@ def avatar_get(user_id):
         if not row or not row['avatar_key'] or not all(SETTINGS['backblaze'].values()): abort(404)
         storage=SETTINGS['backblaze']
         cache_key='flujo:avatar:'+hashlib.sha256(json.dumps([storage[k] for k in ('endpoint','region','bucket','key_id','application_key')]+[row['avatar_key']]).encode()).hexdigest()
-        try: url=CACHE.get_or_create(cache_key,lambda:avatars.signed_url(row['avatar_key'],storage),240)
+        try: url=CACHE.get_or_create(cache_key,lambda:avatars.signed_url(row['avatar_key'],storage),3600)
         except avatars.StorageError: return respond({'error':'Foto no disponible'},503)
         response=redirect(url,302)
         response.headers['Cache-Control']='private, no-store'
@@ -447,6 +448,30 @@ def attachment(attachment_id):
             app.logger.exception('Error al descargar adjunto')
             return respond({'error':'No se pudo descargar el archivo'},503)
 
+def workspace_data(c,u,revision):
+    projects=[]
+    for p in c.execute('SELECT * FROM projects ORDER BY id').fetchall():
+        r=role(c,u,p['id'])
+        if r:
+            d=dict(p); d['role']=r
+            d['columns']=[dict(x) for x in c.execute('SELECT * FROM columns WHERE project_id=? ORDER BY position,id',(p['id'],))]
+            d['types']=[type_data(c,x) for x in c.execute('SELECT * FROM task_types WHERE project_id=? ORDER BY is_base DESC,id',(p['id'],))]
+            d['members']=[dict(x) for x in c.execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=?',(p['id'],))]
+            projects.append(d)
+    allowed={p['id'] for p in projects}; tasks=[]
+    for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count,COALESCE(a.attachment_count,0) AS attachment_count FROM tasks t
+                          LEFT JOIN (SELECT task_id,COUNT(*) AS comment_count FROM comments GROUP BY task_id) cm ON cm.task_id=t.id
+                          LEFT JOIN (SELECT task_id,COUNT(*) AS attachment_count FROM task_attachments GROUP BY task_id) a ON a.task_id=t.id
+                          ORDER BY t.id DESC''').fetchall():
+        placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
+        if can_task(c,u,t['id']):
+            projects_for_task=task_projects(c,t['id']); explicit={r['project_id'] for r in c.execute('SELECT project_id FROM placements WHERE task_id=?',(t['id'],))}
+            d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None
+            status_entry=c.execute('SELECT created_at,message FROM history WHERE task_id=? AND status_id IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1',(t['id'],)).fetchone()
+            d['status_since']=status_entry['created_at'] if status_entry else None; d['status_since_partial']=bool(status_entry and status_entry['message']=='inicio del registro de tiempo por estado')
+            d['status_previous_seconds'],d['status_total_partial']=metrics.previous_status_time(c,t['id'],t['status_id']); tasks.append(d)
+    return {'attachments_enabled':all(SETTINGS['backblaze'].values()),'user':dict(u),'version':VERSION,'revision':revision,'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())}
+
 def api_get():
     path=request.path
     try:
@@ -462,28 +487,14 @@ def api_get():
             if path=='/api/revision': return respond({'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'version':VERSION})
             if path=='/api/tokens': return respond({'tokens':mcp_tokens(c,u['id'])})
             if path=='/api/data':
-                projects=[]
-                for p in c.execute('SELECT * FROM projects ORDER BY id').fetchall():
-                    r=role(c,u,p['id'])
-                    if r:
-                        d=dict(p); d['role']=r
-                        d['columns']=[dict(x) for x in c.execute('SELECT * FROM columns WHERE project_id=? ORDER BY position,id',(p['id'],))]
-                        d['types']=[type_data(c,x) for x in c.execute('SELECT * FROM task_types WHERE project_id=? ORDER BY is_base DESC,id',(p['id'],))]
-                        d['members']=[dict(x) for x in c.execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=?',(p['id'],))]
-                        projects.append(d)
-                allowed={p['id'] for p in projects}; tasks=[]
-                for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count,COALESCE(a.attachment_count,0) AS attachment_count FROM tasks t
-                                      LEFT JOIN (SELECT task_id,COUNT(*) AS comment_count FROM comments GROUP BY task_id) cm ON cm.task_id=t.id
-                                      LEFT JOIN (SELECT task_id,COUNT(*) AS attachment_count FROM task_attachments GROUP BY task_id) a ON a.task_id=t.id
-                                      ORDER BY t.id DESC''').fetchall():
-                    placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
-                    if can_task(c,u,t['id']):
-                        projects_for_task=task_projects(c,t['id']); explicit={r['project_id'] for r in c.execute('SELECT project_id FROM placements WHERE task_id=?',(t['id'],))}
-                        d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None
-                        status_entry=c.execute('SELECT created_at,message FROM history WHERE task_id=? AND status_id IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1',(t['id'],)).fetchone()
-                        d['status_since']=status_entry['created_at'] if status_entry else None; d['status_since_partial']=bool(status_entry and status_entry['message']=='inicio del registro de tiempo por estado')
-                        d['status_previous_seconds'],d['status_total_partial']=metrics.previous_status_time(c,t['id'],t['status_id']); tasks.append(d)
-                return respond({'attachments_enabled':all(SETTINGS['backblaze'].values()),'user':dict(u),'version':VERSION,'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())})
+                revision=c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0]
+                stat=os.stat(DB)
+                identity=[CACHE_EPOCH,stat.st_dev,stat.st_ino,u['id'],revision,str(STATS_ZONE),all(SETTINGS['backblaze'].values())]
+                key='flujo:data:'+hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+                payload=CACHE.get_or_create(key,lambda:app.json.dumps(workspace_data(c,u,revision)),60)
+                response=app.response_class(payload,mimetype='application/json')
+                response.headers['Cache-Control']='private, no-store'
+                return response
             if path=='/api/analytics':
                 params=request.args.to_dict(flat=False); p=int(params['project_id'][0]); month=params['month'][0]
                 if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)

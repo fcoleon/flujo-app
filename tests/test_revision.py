@@ -63,6 +63,42 @@ class RevisionTest(unittest.TestCase):
         self.assertEqual(data['revision'], before)
         self.assertGreater(client.get('/api/revision').json['revision'], before)
 
+    def test_cached_data_is_isolated_and_invalidated(self):
+        from cache import Cache
+        cache=Cache({'type':'memcached','host':'localhost','port':11211})
+        entries={}
+        def call(operation,key,value=None,ttl=None):
+            if operation=='get': return entries.get(key)
+            entries[key]=value
+        with app.db() as c:
+            c.execute("INSERT INTO users(id,name,username,password,salt) VALUES(2,'Lector','lector','','')")
+            c.execute("INSERT INTO sessions(token,user_id,expires_at) VALUES('reader',2,4102444800)")
+            c.execute("INSERT INTO members VALUES(1,2,'viewer')")
+        admin=self.client();reader=app.app.test_client();reader.set_cookie('session','reader')
+        with patch.object(app,'CACHE',cache),patch.object(cache,'_call',side_effect=call),patch.object(app,'workspace_data',wraps=app.workspace_data) as build:
+            first=admin.get('/api/data');self.assertEqual(first.status_code,200)
+            self.assertEqual(first.headers['Cache-Control'],'private, no-store')
+            self.assertEqual(admin.get('/api/data').json,first.json)
+            self.assertEqual(build.call_count,1)
+            self.assertEqual(reader.get('/api/data').json['user']['id'],2)
+            self.assertEqual(build.call_count,2)
+            with app.db() as c: c.execute('DELETE FROM members WHERE project_id=1 AND user_id=2')
+            self.assertEqual(reader.get('/api/data').json['projects'],[])
+            self.assertEqual(build.call_count,3)
+            with app.db() as c: c.execute('UPDATE users SET blocked=1 WHERE id=2')
+            self.assertEqual(reader.get('/api/data').status_code,403)
+            self.assertEqual(app.app.test_client().get('/api/data').status_code,401)
+            self.assertEqual(build.call_count,3)
+
+    def test_cached_data_recomputed_if_cache_fails(self):
+        from cache import Cache
+        cache=Cache({'type':'memcached','host':'localhost','port':11211})
+        with patch.object(app,'CACHE',cache),patch.object(cache,'_call',side_effect=OSError('offline')):
+            with self.assertLogs('cache',level='WARNING'):
+                response=self.client().get('/api/data')
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.json['tasks'][0]['title'],'Inicial')
+
     def test_conflicts_independent_fields_and_atomicity(self):
         client = self.client()
         url = '/api/task/update'

@@ -41,7 +41,7 @@ application_key = clave-secreta
 
 Sustituye endpoint y región por los indicados para tu bucket en Backblaze. Instala las dependencias actualizadas y reinicia Flujo. Con los cinco campos vacíos, las fotos están desactivadas; una configuración incompleta impide el arranque. Protege `config.ini` para que solo lo lean los usuarios necesarios.
 
-Las imágenes se procesan en Flask y se guardan en B2. Los usuarios habilitados reciben enlaces de lectura válidos por cinco minutos; quien tenga uno puede usarlo hasta su vencimiento. Las imágenes reemplazadas o eliminadas se registran para limpieza de versiones: el reintento ocurre al guardar o quitar otra foto, después de al menos una hora; si no hay más operaciones, pueden permanecer almacenadas. Respalda la base y el bucket de forma coordinada.
+Las imágenes se procesan en Flask y se guardan en B2. Los usuarios habilitados reciben enlaces de lectura válidos por 65 minutos; quien tenga uno puede usarlo hasta su vencimiento, aunque pierda acceso entretanto. Las imágenes reemplazadas o eliminadas se registran para limpieza de versiones: el reintento ocurre al guardar o quitar otra foto, después de al menos una hora; si no hay más operaciones, pueden permanecer almacenadas. Respalda la base y el bucket de forma coordinada.
 
 La plantilla Nginx nueva admite solicitudes de hasta 11 MiB. En instalaciones existentes o con `--skip-nginx`, configura `client_max_body_size 11m;` en el servidor o ubicación correspondiente y recarga Nginx tras comprobar la configuración. El límite de la foto es 2 MiB; las solicitudes JSON conservan su límite anterior.
 
@@ -62,7 +62,9 @@ port = 11211
 
 Instala y administra por separado el servicio elegido y reinicia Flujo tras modificar la configuración. Para Redis también se admite `rediss://` o `unix://`. La configuración puede contener credenciales: protege `config.ini` y no lo subas a Git. La caché contiene enlaces privados temporales: mantenla accesible únicamente a servicios de confianza; no expongas Memcached a Internet. Para conexiones Redis por red usa autenticación y TLS cuando corresponda.
 
-Los enlaces se guardan por cuatro minutos, menos que los cinco minutos de validez de la firma; Redis o Memcached los eliminan al vencer. Cada solicitud sigue comprobando la sesión antes de consultar la caché. Si esta no responde, Flujo genera el enlace sin caché y registra una advertencia. No se garantiza que solicitudes simultáneas para una misma foto generen una sola firma.
+Los enlaces se guardan por una hora, menos que los 65 minutos de validez de la firma; Redis o Memcached los eliminan al vencer. También se guarda `/api/data` hasta 60 segundos, por usuario y revisión de la base de datos; los cambios generan una clave nueva. Cada solicitud sigue comprobando la sesión antes de consultar la caché. Si esta no responde, Flujo genera la respuesta sin caché y registra una advertencia. No se garantiza que solicitudes simultáneas para una misma clave eviten cálculos duplicados.
+
+Al desplegar cambios que modifiquen el formato o la política de la caché, elimina previamente las entradas de Flujo. Si el servicio se comparte con otras aplicaciones, limita la limpieza a las claves con prefijo `flujo:`; no vacíes la caché completa de otros servicios.
 
 ## Primera instalación
 
