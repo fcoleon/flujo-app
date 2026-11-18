@@ -197,6 +197,11 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .profile-avatar small { display: block; margin-top: 8px; }
 .cancel-button:hover:not(:disabled), .slack-dialog .cancel-button:hover:not(:disabled) { background: #f1f0f2; border-color: #d8d6dc; color: #625e6d; }
 .cancel-button:focus-visible { outline: 2px solid #8e8998; outline-offset: 2px; }
+.task-sync-indicator { display: block; width: 100%; margin: 0 0 10px; padding: 7px 9px; border: 0; border-radius: 6px; background: #f0edfb; color: #6f59c6; text-align: left; font-size: 11px; font-weight: 700; }
+.task-sync-indicator:hover { background: #e7e1f8; }
+.task-sync-indicator:focus-visible { outline: 2px solid #a591e3; outline-offset: 2px; }
+.task-sync-indicator[hidden] { display: none; }
+.sidebar.is-collapsed .task-sync-indicator { overflow-wrap: anywhere; padding: 5px 2px; font-size: 9px; }
 .attachment-list { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; gap: 8px; }
 .attachment-add-control { position: relative; flex: none; border: 0; border-radius: 5px; cursor: pointer; }
 .attachment-add-control:focus-visible { outline: 2px solid #a591e3; outline-offset: 2px; }

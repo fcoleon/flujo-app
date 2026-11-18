@@ -114,6 +114,14 @@ class RevisionTest(unittest.TestCase):
         self.assertEqual(client.post(url, json={'id':self.tid,'description':'X','description_version':0}).status_code, 409)
         self.assertEqual(client.post(url, json={'id':self.tid,'priority':'Alta'}).status_code, 200)
 
+    def test_queued_update_rejects_session_owner_change(self):
+        client=self.client()
+        payload={'id':self.tid,'title':'Cambio','title_version':0,'expected_user_id':2}
+        self.assertEqual(client.post('/api/task/update',json=payload).status_code,403)
+        self.assertEqual(client.get('/api/data').json['tasks'][0]['title'],'Inicial')
+        payload['expected_user_id']=1
+        self.assertEqual(client.post('/api/task/update',json=payload).status_code,200)
+
     def test_concurrent_edits_have_one_winner(self):
         barrier = Barrier(2)
         def edit(title):

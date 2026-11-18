@@ -896,6 +896,12 @@ def post_tasks(c,u,path,b):
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')
                 delete_task(c,tid,u['id'])
             elif path=='/api/task/update':
+                if 'expected_user_id' in b:
+                    current=current_user(c)
+                    flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(current['id'],)).fetchone() if current else None
+                    if type(b['expected_user_id']) is not int or not current or current['id']!=b['expected_user_id'] or flags['blocked'] or flags['must_change_password']:
+                        raise PermissionError('La sesión cambió; conserva tu borrador')
+                    u=current
                 tid=int(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
                 old=c.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
