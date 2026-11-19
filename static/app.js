@@ -939,15 +939,32 @@ let attachmentQueue=[],attachmentUploading=false,attachmentItems={},attachmentGe
 function updateAttachmentCount(id,count){let task=data?.tasks.find(t=>t.id===id);if(task&&Number.isInteger(count)){task.attachment_count=count;renderBoard()}}
 function attachmentType(name){let ext=name.includes('.')?name.split('.').pop().toLowerCase():'';return ({doc:'Documento Word',docx:'Documento Word',pdf:'PDF',xls:'Planilla Excel',xlsx:'Planilla Excel',ppt:'Presentación PowerPoint',pptx:'Presentación PowerPoint',png:'Imagen PNG',jpg:'Imagen JPEG',jpeg:'Imagen JPEG',txt:'Texto',zip:'Archivo ZIP'})[ext]||(ext?'.'+ext:'Archivo')}
 function isAttachmentImage(name){return /\.(png|jpe?g|gif|webp)$/i.test(name)}
+function setupAttachmentPan(body,image){
+  let drag=null;
+  const scrollable=()=>body.scrollWidth>body.clientWidth||body.scrollHeight>body.clientHeight;
+  image.draggable=false;
+  image.addEventListener('pointerdown',e=>{
+    if(e.pointerType!=='mouse'||e.button!==0||!scrollable())return;
+    drag={id:e.pointerId,x:e.clientX,y:e.clientY,left:body.scrollLeft,top:body.scrollTop};
+    image.setPointerCapture(e.pointerId);image.classList.add('dragging');e.preventDefault();
+  });
+  image.addEventListener('pointermove',e=>{if(drag&&e.pointerId===drag.id){body.scrollLeft=drag.left+drag.x-e.clientX;body.scrollTop=drag.top+drag.y-e.clientY}});
+  image.addEventListener('lostpointercapture',()=>{drag=null;image.classList.remove('dragging')});
+  image.addEventListener('pointerup',e=>{if(drag&&e.pointerId===drag.id)image.releasePointerCapture(e.pointerId)});
+  const update=()=>image.classList.toggle('pannable',scrollable());
+  image.addEventListener('pointerenter',update);
+  return update;
+}
 function viewAttachment(id,name){
   let dialog=document.createElement('dialog'),url='/api/attachments/'+encodeURIComponent(id),scale=1;
   dialog.className='attachment-viewer';dialog.setAttribute('aria-label','Vista de imagen: '+name);
   dialog.innerHTML=`<div class="attachment-viewer-bar"><strong></strong><button type="button" data-zoom="-1" aria-label="Reducir imagen">−</button><span data-scale>100%</span><button type="button" data-zoom="1" aria-label="Ampliar imagen">+</button><a href="${url}">Descargar</a><button type="button" data-close aria-label="Cerrar vista">×</button></div><div class="attachment-viewer-body"><img alt=""><p hidden>No se pudo mostrar esta imagen. Puedes descargar el archivo.</p></div>`;
   let image=dialog.querySelector('img'),body=dialog.querySelector('.attachment-viewer-body'),fit=0;dialog.querySelector('strong').textContent=name;image.alt=name;
-  image.onload=()=>{fit=Math.min(1,body.clientWidth/image.naturalWidth,body.clientHeight/image.naturalHeight)*image.naturalWidth;image.style.width=fit+'px'};
+  let updatePan=setupAttachmentPan(body,image);
+  image.onload=()=>{fit=Math.min(1,body.clientWidth/image.naturalWidth,body.clientHeight/image.naturalHeight)*image.naturalWidth;image.style.width=fit+'px';updatePan()};
   image.src=url+'?preview=1';
   image.onerror=()=>{image.hidden=true;dialog.querySelector('p').hidden=false};
-  dialog.querySelectorAll('[data-zoom]').forEach(button=>button.onclick=()=>{scale=Math.max(.25,Math.min(5,scale+(Number(button.dataset.zoom)*.25)));if(fit)image.style.width=fit*scale+'px';dialog.querySelector('[data-scale]').textContent=Math.round(scale*100)+'%'});
+  dialog.querySelectorAll('[data-zoom]').forEach(button=>button.onclick=()=>{scale=Math.max(.25,Math.min(5,scale+(Number(button.dataset.zoom)*.25)));if(fit)image.style.width=fit*scale+'px';updatePan();dialog.querySelector('[data-scale]').textContent=Math.round(scale*100)+'%'});
   dialog.querySelector('[data-close]').onclick=()=>dialog.close();
   dialog.addEventListener('close',()=>dialog.remove());document.body.appendChild(dialog);dialog.showModal();
 }

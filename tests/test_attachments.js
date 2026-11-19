@@ -9,6 +9,18 @@ eval(source.slice(source.indexOf('function attachmentType('),source.indexOf('fun
   assert(isAttachmentImage('foto.JPEG')&&isAttachmentImage('foto.webp'),'reconoce imágenes');
   assert(!isAttachmentImage('foto.svg')&&!isAttachmentImage('foto.png.html'),'excluye imágenes no admitidas');
 `);
+eval(source.slice(source.indexOf('function setupAttachmentPan('),source.indexOf('function viewAttachment('))+`
+  let handlers={},classes=new Set(),captured=null;
+  let image={classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),toggle:(x,on)=>on?classes.add(x):classes.delete(x)},addEventListener:(name,fn)=>handlers[name]=fn,setPointerCapture:id=>captured=id,releasePointerCapture:id=>{if(captured===id){captured=null;handlers.lostpointercapture()}}};
+  let body={clientWidth:100,clientHeight:100,scrollWidth:100,scrollHeight:100,scrollLeft:20,scrollTop:30};
+  let update=setupAttachmentPan(body,image),event={pointerType:'mouse',button:0,pointerId:1,clientX:50,clientY:50,preventDefault(){}};
+  update();handlers.pointerdown(event);assert(!classes.has('pannable')&&captured===null,'sin scroll no arrastra');
+  body.scrollWidth=300;update();handlers.pointerdown(event);
+  handlers.pointermove({...event,clientX:40,clientY:35});
+  assert(classes.has('pannable')&&classes.has('dragging')&&body.scrollLeft===30&&body.scrollTop===45,'arrastra imagen ampliada');
+  handlers.pointerup(event);assert(!classes.has('dragging')&&captured===null,'suelta el arrastre');
+  handlers.pointerdown({...event,pointerType:'touch'});assert(captured===null,'conserva desplazamiento táctil nativo');
+`);
 let inside={},outside={},card={open:true,contains:target=>target===inside},handler;
 let list={querySelectorAll:()=>[card]},dialog={addEventListener:(event,callback)=>{if(event==='click')handler=callback}};
 eval(source.match(/dialog\.addEventListener\('click',e=>\{list\.querySelectorAll\('details\.attachment-card\[open\]'\).*?\}\);/)[0]);

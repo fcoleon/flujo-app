@@ -252,7 +252,9 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .attachment-viewer::backdrop{background:#000b}
 .attachment-viewer-bar{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#25232c;flex-wrap:wrap}
 .attachment-viewer-bar strong{flex:1;min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.attachment-viewer-bar button,.attachment-viewer-bar a{color:#fff;background:#413d4a;border:0;border-radius:5px;padding:8px 12px;cursor:pointer;text-decoration:none}
+.attachment-viewer-bar button,.attachment-viewer-bar a{color:#fff;background:#413d4a;border:0;border-radius:5px;padding:8px 12px;cursor:pointer;text-decoration:none;user-select:none}
 .attachment-viewer-bar button:focus-visible,.attachment-viewer-bar a:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .attachment-viewer-body{flex:1;min-height:0;overflow:auto;display:grid;place-items:safe center}
 .attachment-viewer-body img{display:block;height:auto;max-width:none}
+.attachment-viewer-body img.pannable{cursor:grab}
+.attachment-viewer-body img.dragging{cursor:grabbing}
