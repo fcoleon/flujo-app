@@ -6,6 +6,8 @@ eval(source.slice(source.indexOf('function attachmentType('),source.indexOf('fun
   assert(attachmentType('informe.PDF')==='PDF','extensiones sin distinción de mayúsculas');
   assert(attachmentType('archivo.xyz')==='.xyz','extensión desconocida');
   assert(attachmentType('archivo')==='Archivo','sin extensión');
+  assert(isAttachmentImage('foto.JPEG')&&isAttachmentImage('foto.webp'),'reconoce imágenes');
+  assert(!isAttachmentImage('foto.svg')&&!isAttachmentImage('foto.png.html'),'excluye imágenes no admitidas');
 `);
 let inside={},outside={},card={open:true,contains:target=>target===inside},handler;
 let list={querySelectorAll:()=>[card]},dialog={addEventListener:(event,callback)=>{if(event==='click')handler=callback}};

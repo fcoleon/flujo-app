@@ -248,3 +248,11 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .attachment-ripple { position: absolute; width: 32px; height: 32px; margin: -16px 0 0 -16px; border: 2px solid #a591e3; border-radius: 50%; opacity: 0; animation: attachment-ripple 1.3s ease-out forwards; }
 @keyframes attachment-ripple { 0% { transform: scale(.4); opacity: .5; } 100% { transform: scale(4); opacity: 0; } }
 @media(prefers-reduced-motion:reduce){.attachment-drop-hint,.attachment-drop-hint::before{animation:none!important}}
+.attachment-viewer[open]{position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:#18171c;color:#fff;display:flex;flex-direction:column}
+.attachment-viewer::backdrop{background:#000b}
+.attachment-viewer-bar{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#25232c;flex-wrap:wrap}
+.attachment-viewer-bar strong{flex:1;min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attachment-viewer-bar button,.attachment-viewer-bar a{color:#fff;background:#413d4a;border:0;border-radius:5px;padding:8px 12px;cursor:pointer;text-decoration:none}
+.attachment-viewer-bar button:focus-visible,.attachment-viewer-bar a:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.attachment-viewer-body{flex:1;min-height:0;overflow:auto;display:grid;place-items:safe center}
+.attachment-viewer-body img{display:block;height:auto;max-width:none}

@@ -45,7 +45,7 @@ Las imágenes se procesan en Flask y se guardan en B2. Los usuarios habilitados 
 
 La plantilla Nginx nueva admite solicitudes de hasta 11 MiB. En instalaciones existentes o con `--skip-nginx`, configura `client_max_body_size 11m;` en el servidor o ubicación correspondiente y recarga Nginx tras comprobar la configuración. El límite de la foto es 2 MiB; las solicitudes JSON conservan su límite anterior.
 
-Cada adjunto admite hasta 10 MiB y se descarga como archivo binario, sin vista previa ni análisis antivirus. Los archivos antiguos se agregan a la misma cola de limpieza de versiones descrita para fotos; respalda SQLite y el bucket de forma coordinada.
+Cada adjunto admite hasta 10 MiB y se descarga como archivo binario, sin análisis antivirus. Las imágenes JPEG, PNG, GIF y WebP tienen vista previa autenticada si su contenido coincide con la extensión. Los archivos antiguos se agregan a la misma cola de limpieza de versiones descrita para fotos; respalda SQLite y el bucket de forma coordinada.
 
 ### Caché opcional
 

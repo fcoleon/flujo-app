@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import app
+from PIL import Image
 
 
 class AttachmentsTest(unittest.TestCase):
@@ -63,6 +64,27 @@ class AttachmentsTest(unittest.TestCase):
         self.assertEqual(other.get('/api/attachments/'+ident).status_code,403)
         self.assertEqual(other.post('/api/attachments/'+ident,json={}).status_code,403)
         self.assertEqual(app.app.test_client().get('/api/attachments/'+ident).status_code,401)
+
+    def test_image_preview(self):
+        image=io.BytesIO()
+        Image.new('RGB',(2,2),'red').save(image,format='PNG')
+        ident=self.upload(name='foto.PNG').json['id']
+        self.s3.get_object.side_effect=lambda **kwargs: {'Body':io.BytesIO(image.getvalue())}
+        url='/api/attachments/'+ident+'?preview=1'
+        response=self.client.get(url)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.mimetype,'image/png')
+        self.assertIn('inline',response.headers['Content-Disposition'])
+        self.assertEqual(response.headers['X-Content-Type-Options'],'nosniff')
+        self.assertIn('sandbox',response.headers['Content-Security-Policy'])
+        self.assertEqual(response.headers['Cache-Control'],'private, no-store')
+        other=app.app.test_client();other.set_cookie('session','two')
+        self.assertEqual(other.get(url).status_code,403)
+        self.assertEqual(app.app.test_client().get(url).status_code,401)
+        self.s3.get_object.side_effect=lambda **kwargs: {'Body':io.BytesIO(b'<svg onload="alert(1)"></svg>')}
+        self.assertEqual(self.client.get(url).status_code,415)
+        pdf=self.upload(name='file.pdf').json['id']
+        self.assertEqual(self.client.get('/api/attachments/'+pdf+'?preview=1').status_code,415)
 
     def test_deleting_task_queues_file_and_disabled_storage(self):
         self.upload()

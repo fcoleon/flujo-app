@@ -440,7 +440,23 @@ def attachment(attachment_id):
             try: content=body.read(10*1024*1024+1)
             finally: body.close()
             if len(content)>10*1024*1024: return respond({'error':'Archivo demasiado grande'},503)
-            response=send_file(io.BytesIO(content),mimetype='application/octet-stream',as_attachment=True,download_name=row['name'])
+            preview=request.args.get('preview')=='1'
+            mimetype='application/octet-stream'
+            if preview:
+                from PIL import Image, UnidentifiedImageError
+                formats={'jpg':('JPEG','image/jpeg'),'jpeg':('JPEG','image/jpeg'),'png':('PNG','image/png'),'gif':('GIF','image/gif'),'webp':('WEBP','image/webp')}
+                extension=row['name'].rsplit('.',1)[-1].lower() if '.' in row['name'] else ''
+                expected=formats.get(extension)
+                if not expected: return respond({'error':'Formato de imagen no compatible'},415)
+                try:
+                    with Image.open(io.BytesIO(content)) as image:
+                        if image.format!=expected[0]: return respond({'error':'Imagen inválida'},415)
+                        image.verify()
+                except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+                    return respond({'error':'Imagen inválida'},415)
+                mimetype=expected[1]
+            response=send_file(io.BytesIO(content),mimetype=mimetype,as_attachment=not preview,download_name=row['name'])
+            if preview: response.headers['Content-Security-Policy']="default-src 'none'; sandbox"
             response.headers['X-Content-Type-Options']='nosniff'
             response.headers['Cache-Control']='private, no-store'
             return response

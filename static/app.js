@@ -938,10 +938,24 @@ async function openTask(id,tab=null){let previous=taskDraft;if(previous&&!previo
 let attachmentQueue=[],attachmentUploading=false,attachmentItems={},attachmentGeneration={};
 function updateAttachmentCount(id,count){let task=data?.tasks.find(t=>t.id===id);if(task&&Number.isInteger(count)){task.attachment_count=count;renderBoard()}}
 function attachmentType(name){let ext=name.includes('.')?name.split('.').pop().toLowerCase():'';return ({doc:'Documento Word',docx:'Documento Word',pdf:'PDF',xls:'Planilla Excel',xlsx:'Planilla Excel',ppt:'Presentación PowerPoint',pptx:'Presentación PowerPoint',png:'Imagen PNG',jpg:'Imagen JPEG',jpeg:'Imagen JPEG',txt:'Texto',zip:'Archivo ZIP'})[ext]||(ext?'.'+ext:'Archivo')}
+function isAttachmentImage(name){return /\.(png|jpe?g|gif|webp)$/i.test(name)}
+function viewAttachment(id,name){
+  let dialog=document.createElement('dialog'),url='/api/attachments/'+encodeURIComponent(id),scale=1;
+  dialog.className='attachment-viewer';dialog.setAttribute('aria-label','Vista de imagen: '+name);
+  dialog.innerHTML=`<div class="attachment-viewer-bar"><strong></strong><button type="button" data-zoom="-1" aria-label="Reducir imagen">−</button><span data-scale>100%</span><button type="button" data-zoom="1" aria-label="Ampliar imagen">+</button><a href="${url}">Descargar</a><button type="button" data-close aria-label="Cerrar vista">×</button></div><div class="attachment-viewer-body"><img alt=""><p hidden>No se pudo mostrar esta imagen. Puedes descargar el archivo.</p></div>`;
+  let image=dialog.querySelector('img'),body=dialog.querySelector('.attachment-viewer-body'),fit=0;dialog.querySelector('strong').textContent=name;image.alt=name;
+  image.onload=()=>{fit=Math.min(1,body.clientWidth/image.naturalWidth,body.clientHeight/image.naturalHeight)*image.naturalWidth;image.style.width=fit+'px'};
+  image.src=url+'?preview=1';
+  image.onerror=()=>{image.hidden=true;dialog.querySelector('p').hidden=false};
+  dialog.querySelectorAll('[data-zoom]').forEach(button=>button.onclick=()=>{scale=Math.max(.25,Math.min(5,scale+(Number(button.dataset.zoom)*.25)));if(fit)image.style.width=fit*scale+'px';dialog.querySelector('[data-scale]').textContent=Math.round(scale*100)+'%'});
+  dialog.querySelector('[data-close]').onclick=()=>dialog.close();
+  dialog.addEventListener('close',()=>dialog.remove());document.body.appendChild(dialog);dialog.showModal();
+}
 function renderAttachments(id){
   let list=$('#attachmentList');if(!list||Number(list.dataset.task)!==id)return;
   let task=data.tasks.find(t=>t.id===id),project=data.projects.find(p=>p.id===active),editable=task?.can_edit&&(!project||project.role!=='viewer');
-  list.innerHTML=(attachmentItems[id]||[]).map(item=>`<details class="attachment-card"><summary data-tooltip="${esc(item.name)}"><span class="attachment-name">${esc(item.name)}</span><small>${esc(attachmentType(item.name))}</small></summary><div class="attachment-menu"><a href="/api/attachments/${esc(item.id)}">Descargar</a>${editable?`<button type="button" onclick="deleteAttachment('${esc(item.id)}',${id})">Eliminar</button>`:''}</div></details>`).join('')+attachmentQueue.filter(item=>item.task===id).map(item=>`<div class="attachment-card attachment-pending" data-tooltip="${esc(item.file.name)}"><span class="attachment-name">${esc(item.file.name)}</span><small><span class="attachment-spinner" aria-hidden="true"></span> ${item.loading?'Subiendo…':'En espera'}</small></div>`).join('');
+  list.innerHTML=(attachmentItems[id]||[]).map(item=>`<details class="attachment-card"><summary data-tooltip="${esc(item.name)}"><span class="attachment-name">${esc(item.name)}</span><small>${esc(attachmentType(item.name))}</small></summary><div class="attachment-menu">${isAttachmentImage(item.name)?`<button type="button" data-view="${esc(item.id)}">Ver</button>`:''}<a href="/api/attachments/${esc(item.id)}">Descargar</a>${editable?`<button type="button" onclick="deleteAttachment('${esc(item.id)}',${id})">Eliminar</button>`:''}</div></details>`).join('')+attachmentQueue.filter(item=>item.task===id).map(item=>`<div class="attachment-card attachment-pending" data-tooltip="${esc(item.file.name)}"><span class="attachment-name">${esc(item.file.name)}</span><small><span class="attachment-spinner" aria-hidden="true"></span> ${item.loading?'Subiendo…':'En espera'}</small></div>`).join('');
+  list.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{let item=attachmentItems[id].find(item=>item.id===button.dataset.view);if(item){button.closest('details').open=false;viewAttachment(item.id,item.name)}});
 }
 function attachmentRipple(hint,event,rect,state){
   let x=event.clientX,y=event.clientY,now=performance.now();
