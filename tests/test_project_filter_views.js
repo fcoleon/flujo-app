@@ -14,7 +14,9 @@ function taskQuickControls(){return {statusControl:'',personControl:'',dateContr
 const assert=(value,message)=>{if(!value)throw Error(message)};
 eval(source.slice(source.indexOf('const projectFilterCache='),source.indexOf('let projectFilterPanel='))+
      source.slice(source.indexOf('const listCollapsedState='),source.indexOf('function startColumnDrag('))+`
-  let f=projectFilters(data.projects[0]);f.completion='open';f.assignee='9';
+  let f=projectFilters(data.projects[0]);f.completion='open';f.assignee=['9'];
   renderBoard();assert(board.innerHTML.includes('Mía')&&!board.innerHTML.includes('De otra persona')&&!board.innerHTML.includes('Finalizada')&&count.textContent.startsWith('1 de 3'),'filtra tarjetas');
   boardView='list';renderBoard();assert(board.innerHTML.includes('Mía')&&!board.innerHTML.includes('De otra persona')&&!board.innerHTML.includes('Finalizada'),'aplica los mismos filtros en lista');
+  f.assignee=['9','8'];renderBoard();assert(board.innerHTML.includes('Mía')&&board.innerHTML.includes('De otra persona')&&!board.innerHTML.includes('Finalizada'),'selección múltiple en lista');
+  boardView='board';renderBoard();assert(board.innerHTML.includes('Mía')&&board.innerHTML.includes('De otra persona')&&!board.innerHTML.includes('Finalizada'),'selección múltiple en tablero');
 `);
