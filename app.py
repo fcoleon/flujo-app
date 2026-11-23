@@ -811,15 +811,25 @@ def post_task_types(c,u,path,b):
                     if not c.execute('SELECT 1 FROM columns WHERE id=? AND project_id=?',(col,p)).fetchone(): raise ValueError('Columna inválida')
                 elif not parent and not u['admin']:
                     raise PermissionError('Solo un administrador puede crear tareas sin proyecto')
+                assignee=int(b['assignee_id']) if b.get('assignee_id') else None
+                if assignee is not None and not c.execute('SELECT 1 FROM users WHERE id=?',(assignee,)).fetchone():
+                    raise ValueError('Responsable inválido')
+                due_date=str(b['due_date']) if b.get('due_date') else None
+                if due_date:
+                    try: datetime.strptime(due_date,'%Y-%m-%d')
+                    except ValueError: raise ValueError('Fecha límite inválida')
                 type_id=int(b['type_id']) if b.get('type_id') else ensure_base_type(c,p)
                 selected=c.execute('SELECT * FROM task_types WHERE id=?',(type_id,)).fetchone()
                 if not selected or selected['project_id'] != p: raise ValueError('Tipo de tarea inválido para este proyecto')
-                tid=c.execute('INSERT INTO tasks(title,created_at,parent_id,type_id,status_id,public_id) VALUES(?,?,?,?,?,?)',(title,now(),parent,type_id,default_status(c,type_id),str(uuid.uuid4()))).lastrowid
+                tid=c.execute('INSERT INTO tasks(title,created_at,parent_id,type_id,status_id,public_id,assignee_id,due_date) VALUES(?,?,?,?,?,?,?,?)',(title,now(),parent,type_id,default_status(c,type_id),str(uuid.uuid4()),assignee,due_date)).lastrowid
                 if p: c.execute('INSERT INTO placements VALUES(?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM placements WHERE column_id=?))',(tid,p,col,col))
                 record(c,tid,u['id'],'creó la tarea',True)
+                if assignee:
+                    record(c,tid,u['id'],'asignó la tarea',True)
+                    notify_assignment(c,tid,u['id'])
                 metric_event(c,tid,'created',u['id'])
                 if parent: record(c,parent,u['id'],'agregó la subtarea '+title)
-                if p: automate(c,tid,[('created',None,None)],u['id'],p)
+                if p: automate(c,tid,[('created',None,None)]+([('assignee_id',None,assignee)] if assignee else []),u['id'],p)
                 c.commit(); return respond({'id':tid})
             elif path=='/api/task-types':
                 p=int(b['project_id']); name=str(b.get('name','')).strip()

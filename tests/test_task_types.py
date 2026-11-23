@@ -48,6 +48,17 @@ class TaskTypesTest(unittest.TestCase):
         response=self.client_for(user).get('/api/'+path)
         return response.status_code,response.get_json()
 
+    def test_create_task_can_assign_a_user(self):
+        with patch.object(app, 'notify_assignment') as notify:
+            status,result=self.post('tasks',{'title':'Asignada al crear','project_id':1,'column_id':1,'assignee_id':'2','due_date':'2026-12-01'})
+        self.assertEqual(status,200)
+        with app.db() as c:
+            task=c.execute('SELECT assignee_id,due_date FROM tasks WHERE id=?',(result['id'],)).fetchone()
+        self.assertEqual(tuple(task),(2,'2026-12-01'))
+        self.assertEqual(notify.call_args.args[1:],(result['id'],1))
+        self.assertEqual(self.post('tasks',{'title':'Responsable inválido','project_id':1,'column_id':1,'assignee_id':'999'})[0],400)
+        self.assertEqual(self.post('tasks',{'title':'Fecha inválida','project_id':1,'column_id':1,'due_date':'mañana'})[0],400)
+
     def test_status_history_and_existing_task_migration(self):
         task=self.post('tasks',{'title':'Tarea','project_id':1,'column_id':1})[1]['id']
         with app.db() as c:

@@ -265,3 +265,4 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .attachment-viewer-body img{display:block;height:auto;max-width:none}
 .attachment-viewer-body img.pannable{cursor:grab}
 .attachment-viewer-body img.dragging{cursor:grabbing}
+.task-create-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}.task-create-grid label{min-width:0}.task-create-grid .task-create-title{grid-column:1/-1}@media(max-width:600px){.task-create-grid{grid-template-columns:1fr}.task-create-grid .task-create-title{grid-column:auto}}
