@@ -1,6 +1,9 @@
 from validation import integer_field
+from permissions import can_task
+from task_domain import now, record
+from web_helpers import respond
 
-def post(c,u,path,b,can_task,respond,now,record):
+def post(c,u,path,b):
     if path=='/api/comments':
         tid=integer_field(b['task_id']); body=str(b.get('body','')).strip()
         if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para comentar')

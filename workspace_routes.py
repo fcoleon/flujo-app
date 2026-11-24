@@ -1,8 +1,10 @@
 import hmac
 import secrets
 from validation import integer_field, text_field
+from auth import current_user, hashpw, rotate_session, session_response
+from web_helpers import respond
 
-def post(c,u,path,b,current_user,respond,hashpw,rotate_session,session_response):
+def post(c,u,path,b):
     if path=='/api/workspace/update':
         if not u['admin']: raise PermissionError('Solo un administrador del workspace puede cambiar el nombre')
         name=b.get('name')

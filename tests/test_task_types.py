@@ -49,7 +49,7 @@ class TaskTypesTest(unittest.TestCase):
         return response.status_code,response.get_json()
 
     def test_create_task_can_assign_a_user(self):
-        with patch.object(app, 'notify_assignment') as notify:
+        with patch('task_routes.notify_assignment') as notify:
             status,result=self.post('tasks',{'title':'Asignada al crear','project_id':1,'column_id':1,'assignee_id':'2','due_date':'2026-12-01'})
         self.assertEqual(status,200)
         with app.db() as c:
@@ -66,7 +66,7 @@ class TaskTypesTest(unittest.TestCase):
             return real_role(c,u,project)
         def automate(*args):
             app.g.disabled_automations.append({'project_id':1})
-        with patch.object(app,'role',side_effect=role), patch.object(app,'automate',side_effect=automate):
+        with patch.object(app,'role',side_effect=role), patch('task_routes.automate',side_effect=automate):
             self.assertEqual(self.post('tasks',{'title':'No guardar','project_id':1,'column_id':1})[0],403)
         with app.db() as c:
             for table in ('tasks','placements','history','metric_events'):
@@ -255,7 +255,7 @@ class TaskTypesTest(unittest.TestCase):
         client=self.client_for(3)
         self.assertEqual(client.post('/api/profile',json={'name':'Lector'}).status_code,200)
         self.assertEqual(client.get_cookie('session').value,'test-session-3')
-        with patch.object(app,'rotate_session',side_effect=ValueError('fallo')):
+        with patch('workspace_routes.rotate_session',side_effect=ValueError('fallo')):
             failed=client.post('/api/profile',json={'name':'No guardar','current_password':'anterior123','new_password':'nueva1234','confirm_password':'nueva1234'})
         self.assertEqual(failed.status_code,400)
         with app.db() as c:
@@ -448,15 +448,15 @@ class TaskTypesTest(unittest.TestCase):
             typ=app.ensure_base_type(c,1)
             states=c.execute('SELECT id,is_done FROM task_statuses WHERE type_id=?',(typ,)).fetchall()
             ongoing=next(x['id'] for x in states if not x['is_done']); done=next(x['id'] for x in states if x['is_done'])
-        with patch('app.now',return_value='2026-11-03T12:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-03T12:00:00+00:00'), patch('task_routes.now',return_value='2026-11-03T12:00:00+00:00'):
             status,result=self.post('tasks',{'title':'Medible','project_id':1,'column_id':1,'type_id':typ},user=2)
         self.assertEqual(status,200); tid=result['id']
         self.assertEqual(self.post('task/project',{'id':tid,'project_id':2})[0],200)
-        with patch('app.now',return_value='2026-11-06T00:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-06T00:00:00+00:00'), patch('task_routes.now',return_value='2026-11-06T00:00:00+00:00'):
             self.assertEqual(self.post('task/type-status',{'id':tid,'type_id':typ,'status_id':done},user=2)[0],200)
-        with patch('app.now',return_value='2026-11-07T00:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-07T00:00:00+00:00'), patch('task_routes.now',return_value='2026-11-07T00:00:00+00:00'):
             self.post('task/type-status',{'id':tid,'type_id':typ,'status_id':ongoing},user=2)
-        with patch('app.now',return_value='2026-11-08T00:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-08T00:00:00+00:00'), patch('task_routes.now',return_value='2026-11-08T00:00:00+00:00'):
             self.post('task/type-status',{'id':tid,'type_id':typ,'status_id':done},user=2)
         with app.db() as c:
             report=app.analytics(c,1,'2026-11',typ)
@@ -476,10 +476,10 @@ class TaskTypesTest(unittest.TestCase):
         with app.db() as c:
             typ=app.ensure_base_type(c,1)
             done=c.execute('SELECT id FROM task_statuses WHERE type_id=? AND is_done=1',(typ,)).fetchone()['id']
-        with patch('app.now',return_value='2026-11-03T12:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-03T12:00:00+00:00'), patch('task_routes.now',return_value='2026-11-03T12:00:00+00:00'):
             tid=self.post('tasks',{'title':'Atribución','project_id':1,'column_id':1,'type_id':typ},user=2)[1]['id']
         self.assertEqual(self.post('task/update',{'id':tid,'assignee_id':3},user=2)[0],200)
-        with patch('app.now',return_value='2026-11-06T00:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-06T00:00:00+00:00'), patch('task_routes.now',return_value='2026-11-06T00:00:00+00:00'):
             self.assertEqual(self.post('task/type-status',{'id':tid,'type_id':typ,'status_id':done},user=2)[0],200)
         self.post('task/update',{'id':tid,'assignee_id':2},user=2)
         with app.db() as c:
@@ -492,9 +492,9 @@ class TaskTypesTest(unittest.TestCase):
             self.assertEqual(people['Sin datos históricos']['completed'],1)
             self.assertEqual(sum(p['completed'] for p in people.values()),report['totals']['completed'])
             self.assertEqual(app.analytics(c,1,'2026-11',999)['people'],[])
-        with patch('app.now',return_value='2026-11-03T12:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-03T12:00:00+00:00'), patch('task_routes.now',return_value='2026-11-03T12:00:00+00:00'):
             unassigned=self.post('tasks',{'title':'No asignada','project_id':1,'column_id':1,'type_id':typ},user=2)[1]['id']
-        with patch('app.now',return_value='2026-11-06T00:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-06T00:00:00+00:00'), patch('task_routes.now',return_value='2026-11-06T00:00:00+00:00'):
             self.post('task/type-status',{'id':unassigned,'type_id':typ,'status_id':done},user=2)
         with app.db() as c:
             people={p['name']:p for p in app.analytics(c,1,'2026-11')['people']}
@@ -651,17 +651,17 @@ class TaskTypesTest(unittest.TestCase):
             second=c.execute("INSERT INTO task_statuses(type_id,name,color,is_done,position) VALUES(?, 'Otro','#123456',1,2)",(task['type_id'],)).lastrowid
             orphan_type=c.execute('SELECT type_id FROM tasks WHERE id=?',(orphan,)).fetchone()['type_id']
             orphan_done=c.execute('SELECT id FROM task_statuses WHERE type_id=? AND is_done=1',(orphan_type,)).fetchone()['id']
-        with patch('app.now',return_value='2026-01-05T10:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-01-05T10:00:00+00:00'), patch('task_routes.now',return_value='2026-01-05T10:00:00+00:00'):
             self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':done},user=2)
             self.post('task/type-status',{'id':orphan,'type_id':orphan_type,'status_id':orphan_done})
-        with patch('app.now',return_value='2026-01-06T10:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-01-06T10:00:00+00:00'), patch('task_routes.now',return_value='2026-01-06T10:00:00+00:00'):
             self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':second},user=2)
         with app.db() as c:
             values={r['id']:r['completed_at'] for r in c.execute('SELECT id,completed_at FROM tasks WHERE id IN (?,?)',(tid,orphan))}
             self.assertEqual(values,{tid:'2026-01-05T10:00:00+00:00',orphan:'2026-01-05T10:00:00+00:00'})
         self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':task['status_id']},user=2)
         with app.db() as c: self.assertIsNone(c.execute('SELECT completed_at FROM tasks WHERE id=?',(tid,)).fetchone()['completed_at'])
-        with patch('app.now',return_value='2026-01-07T10:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-01-07T10:00:00+00:00'), patch('task_routes.now',return_value='2026-01-07T10:00:00+00:00'):
             self.post('task/type-status',{'id':tid,'type_id':task['type_id'],'status_id':done},user=2)
         task_data=next(t for t in self.get('data',2)[1]['tasks'] if t['id']==tid)
         self.assertEqual(task_data['completed_at'],'2026-01-07T10:00:00+00:00')

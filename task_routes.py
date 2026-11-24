@@ -1,9 +1,15 @@
 import re
 import uuid
 from validation import integer_field, task_title, task_due_date, task_priority
+from auth import current_user
+from descriptions import sanitize_description
+from permissions import can_task, role
+from task_domain import (ensure_base_type, now, default_status, record, notify_assignment,
+                         metric_event, automate, create_type, delete_task, apply_project_base)
+from web_helpers import respond
 
 
-def post_task_types(c,u,path,b,can_task,role,ensure_base_type,now,default_status,record,notify_assignment,metric_event,automate,respond,create_type):
+def post_task_types(c,u,path,b):
             if path=='/api/tasks':
                 title=task_title(b.get('title','')); parent=b.get('parent_id') or None
                 if parent:
@@ -97,7 +103,7 @@ def post_task_types(c,u,path,b,can_task,role,ensure_base_type,now,default_status
                 new_status=c.execute('SELECT status_id FROM tasks WHERE id=?',(tid,)).fetchone()['status_id']
                 if new_status!=task['status_id']: automate(c,tid,[('status',task['status_id'],new_status)],u['id'])
 
-def post_tasks(c,u,path,b,can_task,delete_task,current_user,respond,sanitize_description,record,notify_assignment,automate,role,apply_project_base):
+def post_tasks(c,u,path,b):
             if path=='/api/task/delete':
                 tid=integer_field(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')

@@ -51,7 +51,7 @@ class DeploymentConfigTest(unittest.TestCase):
             (root / 'templates').mkdir()
             (root / 'templates' / 'index.html').touch()
             modules = ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py',
-                       'slack_notify.py', 'slack_auth.py', 'automations.py', 'automation_routes.py', 'workspace_routes.py', 'project_routes.py', 'comment_routes.py', 'task_routes.py', 'mcp_server.py', 'validation.py')
+                       'slack_notify.py', 'slack_auth.py', 'automations.py', 'automation_routes.py', 'workspace_routes.py', 'project_routes.py', 'comment_routes.py', 'task_routes.py', 'mcp_server.py', 'validation.py', 'permissions.py', 'task_domain.py', 'web_helpers.py', 'api_router.py')
             for name in modules:
                 (root / name).touch()
             with patch.object(deploy, 'APP_DIR', root):

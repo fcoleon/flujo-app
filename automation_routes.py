@@ -1,8 +1,10 @@
 from flask import request
 import automations
+from permissions import role
+from web_helpers import respond
 
 
-def get(c,u,path,role,respond):
+def get(c,u,path):
     p=automations.ident(request.args.get('project_id'))
     if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)
     if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin acceso a automatizaciones')
@@ -11,7 +13,7 @@ def get(c,u,path,role,respond):
     return respond({'runs':[dict(r) for r in c.execute('SELECT * FROM automation_runs WHERE project_id=? ORDER BY id DESC LIMIT 100',(p,))]})
 
 
-def post(c,u,path,b,role,respond):
+def post(c,u,path,b):
     p=automations.ident(b.get('project_id'))
     if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): raise ValueError('Proyecto no encontrado')
     if role(c,u,p)!='admin': raise PermissionError('Solo administradores pueden configurar automatizaciones')

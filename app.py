@@ -1,13 +1,8 @@
 import hashlib, hmac, json, os, secrets, sqlite3, re, uuid, subprocess
-from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import analytics as metrics
 import automations
-import automation_routes
-import workspace_routes
-import project_routes
-import comment_routes
-import task_routes
+import api_router
 from contextlib import closing
 from flask import Flask, g, jsonify, make_response, request, send_from_directory, send_file, abort, render_template_string, redirect
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -18,6 +13,11 @@ import time
 from pathlib import Path
 from settings import load_settings
 from cache import Cache
+from permissions import role, task_projects, can_task
+from task_domain import (create_type, ensure_base_type, apply_project_base, default_status,
+                         type_data, metric_event, now, record, automate, notify_assignment, delete_task)
+from web_helpers import respond
+from project_routes import COLUMN_COLORS
 
 SETTINGS = load_settings()
 CACHE = Cache(SETTINGS['cache'])
@@ -27,7 +27,6 @@ PORT = SETTINGS['port']
 STATS_ZONE = ZoneInfo(SETTINGS['timezone'])
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
 TEMPLATE_DIR = Path(__file__).resolve().parent / 'templates'
-COLUMN_COLORS = ('#a5a3ab', '#e7aa69', '#aa91dd', '#78b99a')
 
 def running_version():
     try:
@@ -193,78 +192,9 @@ def init():
         slack_auth.init(c)
         slack_notify.init(c)
 
-def create_type(c, project_id, name, is_base=False):
-    # Historical metrics retain type IDs even after a type is deleted.
-    # Never reuse an ID that is still referenced by those snapshots.
-    current=c.execute('SELECT COALESCE(MAX(id),0) FROM task_types').fetchone()[0]
-    has_metrics=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metric_events'").fetchone()
-    historic=c.execute('SELECT COALESCE(MAX(type_id),0) FROM metric_events').fetchone()[0] if has_metrics else 0
-    has_sequence=c.execute("SELECT 1 FROM sqlite_master WHERE name='sqlite_sequence'").fetchone()
-    seq=c.execute("SELECT seq FROM sqlite_sequence WHERE name='task_types'").fetchone() if has_sequence else None
-    tid=max(current,historic,seq[0] if seq else 0)+1
-    c.execute('INSERT INTO task_types(id,project_id,name,is_base) VALUES(?,?,?,?)',(tid,project_id,name,int(is_base)))
-    for i,(label,color,done) in enumerate([('En curso','#8b85a3',0),('Finalizado','#65aa86',1)]):
-        c.execute('INSERT INTO task_statuses(type_id,name,color,is_done,position) VALUES(?,?,?,?,?)',(tid,label,color,done,i))
-    return tid
-
-def ensure_base_type(c, project_id):
-    row=c.execute('SELECT id FROM task_types WHERE project_id IS ? AND is_base=1',(project_id,)).fetchone()
-    return row['id'] if row else create_type(c,project_id,'Tarea base',True)
-
-def apply_project_base(c,task_id,project_id):
-    task=c.execute('SELECT ty.project_id,ty.is_base,s.is_done FROM tasks t JOIN task_types ty ON ty.id=t.type_id JOIN task_statuses s ON s.id=t.status_id WHERE t.id=?',(task_id,)).fetchone()
-    if not task or task['project_id'] is not None or not task['is_base']: return False
-    type_id=ensure_base_type(c,project_id)
-    status=c.execute('SELECT id FROM task_statuses WHERE type_id=? AND is_done=? ORDER BY position,id LIMIT 1',(type_id,task['is_done'])).fetchone()
-    if not status: raise ValueError('El tipo base del proyecto no tiene un estado equivalente')
-    c.execute('UPDATE tasks SET type_id=?,status_id=? WHERE id=?',(type_id,status['id'],task_id))
-    return True
-
-def default_status(c,type_id):
-    row=c.execute('SELECT id FROM task_statuses WHERE type_id=? AND is_done=0 ORDER BY position,id LIMIT 1',(type_id,)).fetchone()
-    if not row: raise ValueError('El tipo debe tener un estado en curso')
-    return row['id']
-
-def type_data(c,row):
-    item=dict(row); item['statuses']=[dict(s) for s in c.execute('SELECT * FROM task_statuses WHERE type_id=? ORDER BY position,id',(row['id'],))]; return item
-
-def metric_event(c, task_id, event, actor_id):
-    timestamp=now()
-    if event in ('completed','reopened'):
-        c.execute('UPDATE tasks SET completed_at=? WHERE id=?',(timestamp if event=='completed' else None,task_id))
-    result=metrics.metric_event(c,task_id,event,actor_id,lambda:timestamp)
-    if event=='completed':
-        import slack_notify
-        slack_notify.enqueue(c,'completion',task_id,actor_id)
-    return result
-
 def analytics(c, project_id, month, type_filter=None):
     return metrics.analytics(c,project_id,month,type_filter,STATS_ZONE)
 
-def now(): return datetime.now(timezone.utc).isoformat()
-def record(c,tid,uid,msg,status=False):
-    if status:
-        c.execute('''INSERT INTO history(task_id,user_id,message,created_at,status_id,status_name,type_id,type_name,status_is_done)
-                     SELECT t.id,?,?,?,s.id,s.name,ty.id,ty.name,s.is_done FROM tasks t
-                     JOIN task_statuses s ON s.id=t.status_id JOIN task_types ty ON ty.id=t.type_id WHERE t.id=?''',(uid,msg,now(),tid))
-    else: c.execute('INSERT INTO history(task_id,user_id,message,created_at) VALUES(?,?,?,?)',(tid,uid,msg,now()))
-def role(c,u,p):
-    if u['admin']: return 'admin'
-    r=c.execute('SELECT role FROM members WHERE project_id=? AND user_id=?',(p,u['id'])).fetchone(); return r['role'] if r else None
-def task_projects(c,tid):
-    return {r['project_id'] for r in c.execute('''WITH RECURSIVE ancestors(id) AS (
-        SELECT ? UNION SELECT t.parent_id FROM tasks t JOIN ancestors a ON t.id=a.id WHERE t.parent_id IS NOT NULL
-    ) SELECT DISTINCT p.project_id FROM placements p JOIN ancestors a ON p.task_id=a.id''',(tid,))}
-def can_task(c,u,tid,write=False):
-    task=c.execute('SELECT parent_id,assignee_id FROM tasks WHERE id=?',(tid,)).fetchone()
-    if not task: return False
-    if u['admin']: return True
-    # Project membership includes inherited projects and takes precedence over assignment.
-    projects=task_projects(c,tid)
-    if projects:
-        return any(role(c,u,p) in (('admin','editor') if write else ('admin','editor','viewer')) for p in projects)
-    if task['assignee_id']==u['id']: return True
-    return bool(task['parent_id'] and can_task(c,u,task['parent_id'],write))
 
 app = Flask(__name__, static_folder=None)
 import slack_auth
@@ -274,8 +204,6 @@ app.register_blueprint(slack_auth.blueprint)
 app.config['MAX_CONTENT_LENGTH'] = 100000
 if os.environ.get('FLUJO_BEHIND_PROXY') == '1':
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=0, x_port=0, x_prefix=0)
-
-def respond(data,status=200): return jsonify(data),status
 
 @app.errorhandler(413)
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
@@ -321,10 +249,6 @@ def static_asset(filename):
     response=send_from_directory(STATIC_DIR,filename)
     response.cache_control.no_cache=True
     return response
-
-@app.route('/api/<path:route>',methods=['GET','POST'])
-def api_dispatch(route):
-    return api_get() if request.method=='GET' else api_post()
 
 @app.route('/api/avatar', methods=['POST'])
 def avatar_upload():
@@ -509,134 +433,6 @@ def workspace_data(c,u,revision):
     base=next(t for t in types.values() if t['project_id'] is None and t['is_base'])
     return {'attachments_enabled':all(SETTINGS['backblaze'].values()),'user':dict(u),'version':VERSION,'revision':revision,'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':base}
 
-def api_get():
-    path=request.path
-    try:
-        with closing(db()) as c, c:
-            if path=='/api/data': c.execute('BEGIN')
-            u=current_user(c)
-            flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone() if u else None
-            blocked=bool(flags and flags['blocked']);must_change=bool(flags and flags['must_change_password'])
-            if path=='/api/session': return respond({'user':dict(u) if u else None,'blocked':blocked,'must_change_password':must_change,'allow_self_registration':SETTINGS['allow_self_registration'],'needs_setup':not bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone())})
-            if not u: return respond({'error':'Inicia sesión'},401)
-            if blocked: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
-            if must_change: return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
-            if path=='/api/revision': return respond({'revision':c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0],'version':VERSION})
-            if path=='/api/tokens': return respond({'tokens':mcp_tokens(c,u['id'])})
-            if path=='/api/data':
-                revision=c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0]
-                stat=os.stat(DB)
-                identity=[CACHE_EPOCH,stat.st_dev,stat.st_ino,u['id'],revision,str(STATS_ZONE),all(SETTINGS['backblaze'].values())]
-                key='flujo:data:'+hashlib.sha256(json.dumps(identity).encode()).hexdigest()
-                payload=CACHE.get_or_create(key,lambda:app.json.dumps(workspace_data(c,u,revision)),60)
-                response=app.response_class(payload,mimetype='application/json')
-                response.headers['Cache-Control']='private, no-store'
-                return response
-            if path=='/api/analytics':
-                params=request.args.to_dict(flat=False); p=int(params['project_id'][0]); month=params['month'][0]
-                if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): return respond({'error':'Proyecto no encontrado'},404)
-                if role(c,u,p)!='admin': return respond({'error':'Solo los administradores del proyecto pueden ver estadísticas'},403)
-                type_filter=int(params['type_id'][0]) if params.get('type_id') else None
-                return respond(analytics(c,p,month,type_filter))
-            if path in ('/api/automations','/api/automations/runs'):
-                return automation_routes.get(c,u,path,role,respond)
-            if path.startswith('/api/comments/'):
-                tid=int(path.split('/')[-1])
-                if not can_task(c,u,tid): return respond({'error':'Sin acceso'},403)
-                return respond([dict(x) for x in c.execute('SELECT cm.*,COALESCE(u.name,"Usuario eliminado") AS author FROM comments cm LEFT JOIN users u ON u.id=cm.user_id WHERE task_id=? ORDER BY cm.id',(tid,))])
-            if path.startswith('/api/history/'):
-                tid=int(path.split('/')[-1])
-                if not can_task(c,u,tid): return respond({'error':'Sin acceso'},403)
-                return respond([dict(x) for x in c.execute('''SELECT h.*,CASE WHEN h.user_id IS NULL AND h.message='inicio del registro de tiempo por estado' THEN 'Sistema' ELSE COALESCE(u.name,'Usuario eliminado') END AS actor FROM history h LEFT JOIN users u ON u.id=h.user_id WHERE task_id=? ORDER BY h.id DESC''',(tid,))])
-            return respond({'error':'No encontrado'},404)
-    except PermissionError as e: return respond({'error':str(e)},403)
-    except (ValueError, KeyError, sqlite3.IntegrityError) as e: return respond({'error':str(e)},400)
-
-def api_post():
-    path=request.path
-    try:
-        raw=request.get_data(cache=False)
-        if request.mimetype!='application/json': return respond({'error':'Se requiere application/json'},415)
-        b=json.loads(raw)
-        if not isinstance(b,dict): raise ValueError('Datos inválidos')
-        with closing(db()) as c, c:
-            u=current_user(c)
-            if path in ('/api/login','/api/setup','/api/register'):
-                if path=='/api/register' and not SETTINGS['allow_self_registration']:
-                    return respond({'error':'El registro está deshabilitado'},403)
-                username=text_field(b,'username').strip().lower(); pw=text_field(b,'password')
-                if path in ('/api/setup','/api/register'):
-                    # Serializa la creación de la primera cuenta entre workers.
-                    c.execute('BEGIN IMMEDIATE')
-                    exists=bool(c.execute('SELECT 1 FROM users').fetchone())
-                    if path=='/api/setup' and exists: raise ValueError('La aplicación ya está configurada')
-                    if path=='/api/register' and not exists: raise ValueError('Primero se debe crear la cuenta administradora')
-                    name=text_field(b,'name').strip()
-                    if not name or not username or len(pw)<8: raise ValueError('Completa los campos; la contraseña debe tener al menos 8 caracteres')
-                    s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin) VALUES(?,?,?,?,?)',(name,username,hashpw(pw,s),s,int(path=='/api/setup')))
-                row=c.execute('SELECT * FROM users WHERE username=?',(username,)).fetchone()
-                password_hash=hashpw(pw,row['salt'] if row else '00'*16)
-                if not hmac.compare_digest(row['password'] if row else '0'*64,password_hash) or not row: return respond({'error':'Usuario o contraseña incorrectos'},401)
-                token=create_session(c,row['id']); c.commit()
-                return session_response(token)
-            if not u: return respond({'error':'Inicia sesión'},401)
-            if path=='/api/logout':
-                c.execute('DELETE FROM sessions WHERE token=?',(request.cookies.get('session',''),)); response=make_response(jsonify({'ok':True})); response.delete_cookie('session',path='/'); return response
-            flags=c.execute('SELECT blocked,must_change_password FROM users WHERE id=?',(u['id'],)).fetchone()
-            if flags['blocked']:
-                return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
-            if path=='/api/password/change':
-                c.execute('BEGIN IMMEDIATE')
-                u=current_user(c)
-                if not u: return respond({'error':'Inicia sesión'},401)
-                credentials=c.execute('SELECT password,salt,blocked FROM users WHERE id=?',(u['id'],)).fetchone()
-                if credentials['blocked']: return respond({'error':'Has sido bloqueado de este workspace, contacta a tu admin para más información','blocked':True},403)
-                current=b.get('current_password','');new=b.get('new_password','');confirmation=b.get('confirm_password','')
-                if not all(isinstance(value,str) for value in (current,new,confirmation)): raise ValueError('Contraseña inválida')
-                if len(new)<8: raise ValueError('La nueva contraseña debe tener al menos 8 caracteres')
-                if new!=confirmation: raise ValueError('Las contraseñas nuevas no coinciden')
-                if not hmac.compare_digest(credentials['password'],hashpw(current,credentials['salt'])): raise ValueError('La contraseña actual es incorrecta')
-                if hmac.compare_digest(credentials['password'],hashpw(new,credentials['salt'])): raise ValueError('La nueva contraseña debe ser distinta de la actual')
-                salt=secrets.token_hex(16);c.execute('UPDATE users SET password=?,salt=?,must_change_password=0 WHERE id=?',(hashpw(new,salt),salt,u['id']))
-                token=rotate_session(c,u['id']);c.commit()
-                return session_response(token)
-            if flags['must_change_password']:
-                return respond({'error':'Debes cambiar tu contraseña temporal','password_change_required':True},403)
-            if path=='/api/avatar/delete':
-                import avatars
-                avatars.remove(c,u['id'],SETTINGS['backblaze'])
-                return respond({'ok':True})
-            g.disabled_automations=[]
-            if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete','/api/tokens','/api/tokens/revoke'):
-                c.execute('BEGIN IMMEDIATE')
-            if path in ('/api/workspace/update','/api/workspace/block','/api/profile','/api/users'):
-                result=workspace_routes.post(c,u,path,b,current_user,respond,hashpw,rotate_session,session_response)
-            elif path in ('/api/projects','/api/projects/update','/api/members','/api/columns','/api/columns/rename','/api/columns/update','/api/columns/reorder','/api/columns/delete'):
-                result=project_routes.post(c,u,path,b,role,respond,ensure_base_type,COLUMN_COLORS,record,delete_task,automate)
-            elif path in ('/api/tasks','/api/task-types','/api/task-types/delete','/api/task-types/update','/api/task/type-status'):
-                result=task_routes.post_task_types(c,u,path,b,can_task,role,ensure_base_type,now,default_status,record,notify_assignment,metric_event,automate,respond,create_type)
-            elif path in ('/api/comments','/api/comments/update'):
-                result=comment_routes.post(c,u,path,b,can_task,respond,now,record)
-            elif path in ('/api/task/delete','/api/task/update','/api/task/move','/api/task/project'):
-                result=task_routes.post_tasks(c,u,path,b,can_task,delete_task,current_user,respond,sanitize_description,record,notify_assignment,automate,role,apply_project_base)
-            elif path in ('/api/automations/save','/api/automations/delete','/api/automations/reorder'):
-                result=automation_routes.post(c,u,path,b,role,respond)
-            elif path in ('/api/tokens','/api/tokens/revoke'):
-                result=post_tokens(c,u,path,b)
-            else: return respond({'error':'No encontrado'},404)
-            if path in ('/api/task-types/delete','/api/task-types/update','/api/workspace/block'):
-                g.disabled_automations.extend(automations.disable_invalid(c))
-            notices=[item for item in g.disabled_automations if role(c,u,item['project_id']) in ('admin','editor')]
-            for item in notices:
-                item['project_name']=c.execute('SELECT name FROM projects WHERE id=?',(item['project_id'],)).fetchone()['name']
-            c.commit()
-            response=make_response(result if result is not None else respond({'ok':True}))
-            if notices:
-                payload=response.get_json();payload['disabled_automations']=notices;response.set_data(app.json.dumps(payload))
-            return response
-    except PermissionError as e: return respond({'error':str(e)},403)
-    except (ValueError, KeyError, sqlite3.IntegrityError, json.JSONDecodeError) as e: return respond({'error':str(e) or 'Datos inválidos'},400)
-
 def post_tokens(c,u,path,b):
     if path=='/api/tokens':
         name=b.get('name')
@@ -650,20 +446,7 @@ def post_tokens(c,u,path,b):
     if not c.execute('UPDATE mcp_tokens SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL',
                      (now(),tid,u['id'])).rowcount: raise ValueError('Token no encontrado')
 
-def automate(c,tid,events,uid,project=None):
-    if project is None:
-        row=c.execute('SELECT ty.project_id FROM tasks t JOIN task_types ty ON ty.id=t.type_id WHERE t.id=?',(tid,)).fetchone()
-        project=row['project_id'] if row else None
-    g.disabled_automations.extend(automations.run(c,tid,project,events,uid,now,record,metric_event,notify_assignment))
-
-def notify_assignment(c,tid,uid):
-    import slack_notify
-    slack_notify.enqueue(c,'assignment',tid,uid)
-
-def delete_task(c,tid,uid):
-    task=c.execute('SELECT title,parent_id FROM tasks WHERE id=?',(tid,)).fetchone()
-    if task['parent_id']: record(c,task['parent_id'],uid,'eliminó la subtarea '+task['title'])
-    c.execute('DELETE FROM tasks WHERE id=?',(tid,))
+api_router.register_api(app, globals())
 
 if __name__=='__main__':
     init(); app.run(host='127.0.0.1',port=PORT,debug=False,threaded=True)
