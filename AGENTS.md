@@ -3,9 +3,9 @@
 ## Mapa
 
 - `app.py`: arranque Flask, configuración, conexión SQLite e `init()` (esquema y migraciones).
-- `api_router.py`: rutas HTTP explícitas, autenticación y transacciones comunes. `workspace_routes.py`, `project_routes.py`, `task_routes.py`, `comment_routes.py` y `automation_routes.py`: operaciones por área.
+- `api_router.py`: rutas HTTP explícitas, autenticación y transacciones comunes; recibe servicios acotados al registrarse. `workspace_routes.py`, `project_routes.py`, `task_routes.py`, `comment_routes.py` y `automation_routes.py`: operaciones por área.
 - `permissions.py`: permisos compartidos; `task_domain.py`: lógica compartida de tareas, historial y automatizaciones; `web_helpers.py`: respuestas HTTP.
-- `mcp_server.py`: servidor MCP de solo lectura; expone `/mcp` con uvicorn sobre un socket Unix junto al de la aplicación y aplica los permisos del usuario dueño de cada token (`mcp_tokens`).
+- `mcp_server.py`: servidor MCP de solo lectura; expone `/mcp` con uvicorn sobre un socket Unix junto al de la aplicación y aplica los permisos del usuario dueño de cada token. `mcp_tokens.py`: consulta y validación de tokens.
 - `auth.py`: contraseñas y sesiones; `analytics.py`: eventos y estadísticas; `descriptions.py`: saneamiento de HTML; `validation.py`: validación compartida de campos; `settings.py`: configuración compartida.
 - `templates/index.html` y `static/`: interfaz. Los archivos JS se cargan en el orden indicado por la plantilla y comparten estado global; conserva los manejadores inline y el versionado de cada asset. `tests/`: pruebas Python y JavaScript; `deploy/`: Gunicorn, Supervisor, Nginx y despliegue.
 

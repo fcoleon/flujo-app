@@ -8,6 +8,7 @@ from flask import Flask, g, jsonify, make_response, request, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 from descriptions import DescriptionSanitizer, sanitize_description
 from validation import text_field, integer_field, task_title, task_due_date, task_priority
+from mcp_tokens import mcp_token_hash, mcp_tokens, mcp_token_user
 from auth import hashpw, current_user, session_response, create_session, rotate_session, SESSION_SECONDS
 import time
 from pathlib import Path
@@ -43,23 +44,6 @@ VERSION = running_version()
 def db():
     c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     c.execute('PRAGMA foreign_keys=ON'); return c
-
-def mcp_token_hash(token): return hashlib.sha256(token.encode()).hexdigest()
-
-def mcp_tokens(c,uid):
-    return [dict(r) for r in c.execute('SELECT id,name,created_at,last_used_at,revoked_at FROM mcp_tokens WHERE user_id=? ORDER BY id DESC',(uid,))]
-
-def mcp_token_user(c,token):
-    """Resuelve un token Bearer de un agente MCP a su usuario. Devuelve (usuario, motivo_de_rechazo)."""
-    digest=mcp_token_hash(token)
-    row=c.execute('''SELECT u.id,u.name,u.username,u.admin,u.blocked,u.must_change_password
-                     FROM mcp_tokens t JOIN users u ON u.id=t.user_id
-                     WHERE t.token_hash=? AND t.revoked_at IS NULL''',(digest,)).fetchone()
-    if not row: return None,'invalid'
-    u={'id':row['id'],'name':row['name'],'username':row['username'],'admin':row['admin']}
-    if row['blocked']: return u,'blocked'
-    if row['must_change_password']: return u,'password'
-    return u,None
 
 def init():
     with db() as c:
@@ -433,20 +417,19 @@ def workspace_data(c,u,revision):
     base=next(t for t in types.values() if t['project_id'] is None and t['is_base'])
     return {'attachments_enabled':all(SETTINGS['backblaze'].values()),'user':dict(u),'version':VERSION,'revision':revision,'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':base}
 
-def post_tokens(c,u,path,b):
-    if path=='/api/tokens':
-        name=b.get('name')
-        if not isinstance(name,str) or not name.strip() or len(name.strip())>60:
-            raise ValueError('El nombre debe tener entre 1 y 60 caracteres')
-        token='flj_'+secrets.token_urlsafe(32)
-        tid=c.execute('INSERT INTO mcp_tokens(user_id,name,token_hash,created_at) VALUES(?,?,?,?)',
-                      (u['id'],name.strip(),mcp_token_hash(token),now())).lastrowid
-        return respond({'id':tid,'name':name.strip(),'token':token})
-    tid=automations.ident(b.get('id'))
-    if not c.execute('UPDATE mcp_tokens SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL',
-                     (now(),tid,u['id'])).rowcount: raise ValueError('Token no encontrado')
+def workspace_data_response(c,u):
+    revision=c.execute('SELECT revision FROM data_revision WHERE id=1').fetchone()[0]
+    stat=os.stat(DB)
+    identity=[CACHE_EPOCH,stat.st_dev,stat.st_ino,u['id'],revision,str(STATS_ZONE),all(SETTINGS['backblaze'].values())]
+    key='flujo:data:'+hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+    payload=CACHE.get_or_create(key,lambda:app.json.dumps(workspace_data(c,u,revision)),60)
+    response=app.response_class(payload,mimetype='application/json')
+    response.headers['Cache-Control']='private, no-store'
+    return response
 
-api_router.register_api(app, globals())
+api_router.register_api(app, api_router.ApiServices(
+    db=db, settings=SETTINGS, version=VERSION,
+    data_response=workspace_data_response, analytics=analytics))
 
 if __name__=='__main__':
     init(); app.run(host='127.0.0.1',port=PORT,debug=False,threaded=True)

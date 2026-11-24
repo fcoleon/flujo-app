@@ -3,6 +3,8 @@ import tempfile
 import unittest
 
 import app
+import api_router
+from flask import Flask, jsonify
 
 
 class ApiRouteContractTest(unittest.TestCase):
@@ -43,3 +45,14 @@ class ApiRouteContractTest(unittest.TestCase):
         self.assertEqual(response.status_code,404)
         with app.db() as c:
             self.assertEqual(c.execute('SELECT COUNT(*) FROM tasks').fetchone()[0],0)
+
+    def test_router_uses_only_explicit_services(self):
+        isolated=Flask(__name__)
+        services=api_router.ApiServices(
+            db=app.db,settings={'allow_self_registration':False},version='test',
+            data_response=lambda c,u: jsonify({'owner':u['id']}),
+            analytics=lambda c,p,month,typ: {})
+        api_router.register_api(isolated,services)
+        client=isolated.test_client();client.set_cookie('session','test')
+        self.assertEqual(client.get('/api/data').json,{'owner':1})
+        self.assertEqual(client.get('/api/revision').json['version'],'test')

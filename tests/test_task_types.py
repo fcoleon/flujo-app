@@ -66,7 +66,7 @@ class TaskTypesTest(unittest.TestCase):
             return real_role(c,u,project)
         def automate(*args):
             app.g.disabled_automations.append({'project_id':1})
-        with patch.object(app,'role',side_effect=role), patch('task_routes.automate',side_effect=automate):
+        with patch('api_router.role',side_effect=role), patch('task_routes.automate',side_effect=automate):
             self.assertEqual(self.post('tasks',{'title':'No guardar','project_id':1,'column_id':1})[0],403)
         with app.db() as c:
             for table in ('tasks','placements','history','metric_events'):
@@ -286,7 +286,7 @@ class TaskTypesTest(unittest.TestCase):
         for body in ({}, {'username':3,'password':'x'}, {'username':'admin','password':None}):
             with self.subTest(body=body): self.assertEqual(client.post('/api/login',json=body).status_code,400)
         self.assertEqual(self.client_for(1).post('/api/profile',json={'name':'Admin','new_password':None}).status_code,400)
-        with patch.object(app,'hashpw',return_value='a'*64) as hashed:
+        with patch('api_router.hashpw',return_value='a'*64) as hashed:
             response=client.post('/api/login',json={'username':'ausente','password':'clave'})
             self.assertEqual(response.status_code,401)
             hashed.assert_called_once_with('clave','00'*16)
