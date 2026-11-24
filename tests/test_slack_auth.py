@@ -157,9 +157,10 @@ class SlackAuthTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/slack/preferences', json=payload).status_code, 400)
         with patch('slack_auth.slack_api', side_effect=AssertionError('unexpected network')):
             self.assertEqual(self.client.post('/api/slack/test', json={}).status_code, 200)
+            self.assertEqual(self.client.post('/api/slack/digest/test', json={'user_id': 2}).status_code, 200)
         with self.db() as c:
-            row = c.execute('SELECT team_id,slack_user_id,kind,task_id FROM slack_queue').fetchone()
-            self.assertEqual(tuple(row), ('T1', 'U1', 'test', None))
+            rows = c.execute('SELECT team_id,slack_user_id,kind,task_id FROM slack_queue ORDER BY id').fetchall()
+            self.assertEqual([tuple(row) for row in rows], [('T1', 'U1', 'test', None), ('T1', 'U1', 'digest_test', None)])
 
     def test_status_unconfigured(self):
         self.app.config.pop('SLACK_SETTINGS')
@@ -169,7 +170,7 @@ class SlackAuthTest(unittest.TestCase):
                                        'preferences': [], 'summary': {'enabled': False, 'hour': 9, 'minute': 0, 'weekdays': list(range(7))}})
 
     def test_post_rejects_csrf_form_content_types(self):
-        paths = ('install/start', 'link/start', 'preferences', 'test', 'unlink', 'disconnect')
+        paths = ('install/start', 'link/start', 'preferences', 'test', 'digest/test', 'unlink', 'disconnect')
         for path in paths:
             for content_type in ('application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain'):
                 with self.subTest(path=path, content_type=content_type):

@@ -7,7 +7,8 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 let data={user:{admin:true},projects:[{id:1,name:'Admin <proyecto>',role:'admin'},{id:2,name:'Lector',role:'viewer'}]};
 let requests=[],html='',form,dialog,handlers={},messages=[],destination,previous={hidden:false},focused=false,confirmations=0;
 const group=(id,assignment,comment,completion)=>({dataset:{project:id},insertAdjacentHTML(position,value){html+=value},remove(){},querySelector(s){return s.includes('assignment')?{checked:assignment}:s.includes('comment')?{checked:comment}:completion==null?null:{checked:completion}}});
-form={elements:{enabled:{checked:true},time:{value:'540'}},before(){},addEventListener(name,fn){if(name==='change')this.change=fn},querySelector(){return {classList:{add(){}},insertAdjacentHTML(position,value){html+=value}}},querySelectorAll(s){return s==='[data-project]'?[group('',true,false,null),group('1',false,true,true),group('2',true,true,null)]:[{value:'0'},{value:'4'}]}};
+let footer={classList:{add(){}},insertAdjacentHTML(position,value){html+=value}};
+form={elements:{enabled:{checked:true},time:{value:'540'}},get firstElementChild(){return footer},before(){},prepend(){},addEventListener(name,fn){if(name==='change')this.change=fn},querySelector(s){return s==='.dialog-actions'?footer:{insertAdjacentHTML(position,value){html+=value}}},querySelectorAll(s){return s==='[data-project]'?[group('',true,false,null),group('1',false,true,true),group('2',true,true,null)]:[{value:'0'},{value:'4'}]}};
 dialog={isConnected:true,get firstElementChild(){return form},setAttribute(){},set innerHTML(value){html=value},get innerHTML(){return html},showModal(){},close(){handlers.close()},remove(){},addEventListener(name,fn){handlers[name]=fn},querySelector(s){if(s==='button')return {};if(s==='#slackForm')return form;if(s==='#slackError')return {textContent:''};if(s==='#slackTitle')return {classList:{add(){}},insertAdjacentHTML(position,icon){html+=icon}}},querySelectorAll(){return []}};
 const document={activeElement:{focus(){focused=true}},querySelector(){return previous},createElement(tag){return tag==='dialog'?dialog:{appendChild(){}}},body:{appendChild(){}}};
 function slackIcon(){return '<svg class="slack-icon"></svg>'}
@@ -27,6 +28,7 @@ eval(source.slice(source.indexOf('function slackPreferenceFields('),source.index
     let table=slackPreferenceTable([{id:null,name:'Sin proyecto'}],[]);
     assert(!table.includes('name="completion"'),'sin proyecto no tiene opción de finalización');
     assert(html.includes('data-action="disconnect"')&&html.includes('data-action="unlink"'));
+    assert(html.includes('data-action="digest/test">Enviar resumen de prueba</button>'));
     await form.onsubmit({preventDefault(){}});
     assert.deepStrictEqual(requests[1],{path:'slack/preferences',body:{preferences:[
       {project_id:null,assignment:true,comment:false,completion:false},
@@ -37,10 +39,14 @@ eval(source.slice(source.indexOf('function slackPreferenceFields('),source.index
     click('test');await Promise.resolve();await Promise.resolve();
     assert.deepStrictEqual(requests[2],{path:'slack/test',body:{}});
     assert.strictEqual(messages.pop(),'Prueba de Slack encolada para envío');
+    form.change();click('digest/test');await Promise.resolve();await Promise.resolve();
+    assert.deepStrictEqual(requests[3],{path:'slack/digest/test',body:{}});
+    assert.strictEqual(messages.pop(),'Resumen de prueba encolado para envío');
+    assert(confirmations===0,'la prueba conserva cambios sin guardar');
     click('link/start');await Promise.resolve();await Promise.resolve();
-    assert.deepStrictEqual(requests[3],{path:'slack/link/start',body:{}});
+    assert.deepStrictEqual(requests[4],{path:'slack/link/start',body:{}});
     assert.strictEqual(destination,'https://slack.com/oauth');
-    form.change();click('close');assert(confirmations===1&&!previous.hidden&&focused,'cancelar confirma cambios y restaura modal y foco');
+    form.change();click('close');assert(confirmations===2&&!previous.hidden&&focused,'cancelar confirma cambios y restaura modal y foco');
     data.user.admin=false;slackSettings();await Promise.resolve();
     assert(!html.includes('data-action="disconnect"'));
     assert(html.includes('<table class="slack-preferences">'));

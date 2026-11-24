@@ -7,8 +7,10 @@ let data={user:{id:1},projects:[{id:10,name:'A'},{id:20,name:'B'}],tasks:[
   {id:4,title:'Finalizada',assignee_id:1,due_date:'2026-01-02',priority:'Alta',can_edit:true,has_projects:true,placements:[{project_id:20}],done:true},
   {id:5,title:'De otra persona',assignee_id:2,can_edit:true,has_projects:false,placements:[],done:false}
 ]};
-let results={innerHTML:''},count={textContent:''};
-const $=s=>s==='#myTaskResults'?results:s==='#myTaskCount'?count:null;
+let results={innerHTML:''},count={textContent:''},breadcrumb={textContent:''},header={querySelector:()=>breadcrumb},removed=false;
+let main={classList:{add(){}},lastElementChild:{remove(){removed=true;main.lastElementChild=header}},querySelector:s=>s==='.topbar'?header:{insertBefore(){}},insertAdjacentHTML(position,html){this.content=html}};
+const document={createElement:()=>({setAttribute(){},appendChild(){}})};
+const $=s=>s==='#myTaskResults'?results:s==='#myTaskCount'?count:s==='#app main'?main:null;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function taskStatus(t){return {is_done:t.done}} function matchesSearch(t,q){return t.title.toLowerCase().includes(q.toLowerCase())}
 function taskQuickControls(t,editable){return {statusControl:editable?'EDITAR':'LECTURA',dateControl:'FECHA',priorityControl:'PRIORIDAD'}}
@@ -29,4 +31,5 @@ eval(source.slice(source.indexOf('function taskContextProjects('),source.indexOf
   assert(groups.map(g=>g.tasks.map(t=>t.id).join(',')).join('|')==='1|2,3|4|5|6','límites de fechas en año bisiesto');
   data.stats_timezone='America/Santiago';assert(myTasksToday(new Date('2026-01-01T02:00:00Z'))==='2025-12-31','usa zona horaria configurada');
   mineSearch='';mineGroup='due';renderMyTaskResults();assert(results.innerHTML.includes('my-tasks-group')&&results.innerHTML.includes('Finalizadas'),'muestra grupos');
+  renderMyTasks();assert(removed&&main.lastElementChild===header&&breadcrumb.textContent==='Mis tareas'&&main.content.includes('my-tasks-filters'),'conserva la cabecera y sus controles móviles');
 `);

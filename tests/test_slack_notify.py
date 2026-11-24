@@ -247,6 +247,28 @@ class SlackNotifyTest(unittest.TestCase):
             self.assertIn('America/New_York', text)
             self.assertIn('Restantes: 1', text)
             self.assertIn('https://example.com/my-tasks', text)
+            self.assertIn('Fecha límite: 2026-01-03', text)
+            self.assertIn('Prioridad alta', text)
+
+    def test_digest_test_without_schedule_or_tasks_and_connection_recheck(self):
+        with self.c:
+            stamp = slack._stamp(slack._now())
+            self.c.execute("""INSERT INTO slack_queue(installation_id,user_id,team_id,slack_user_id,kind,available_at,created_at,updated_at)
+                              VALUES(1,2,'T','U2','digest_test',?,?,?)""", (stamp, stamp, stamp))
+            self.c.execute('DELETE FROM members WHERE user_id=2')
+        with patch.object(slack, '_send', return_value=('sent', 0, None)) as send:
+            slack.run_once()
+            self.assertEqual(send.call_args.args[1], 'U2')
+            self.assertIn('Prueba del resumen diario', send.call_args.args[2])
+            self.assertIn('No tienes tareas pendientes', send.call_args.args[2])
+            self.assertNotIn('task-uuid', send.call_args.args[2])
+        with self.c:
+            self.c.execute("""INSERT INTO slack_queue(installation_id,user_id,team_id,slack_user_id,kind,available_at,created_at,updated_at)
+                              VALUES(1,2,'T','U2','digest_test',?,?,?)""", (stamp, stamp, stamp))
+            self.c.execute("UPDATE slack_accounts SET slack_user_id='NEW' WHERE user_id=2")
+        with patch.object(slack, '_send') as send:
+            slack.run_once()
+            send.assert_not_called()
 
     def test_legacy_weekday_migration_is_idempotent(self):
         with self.c:

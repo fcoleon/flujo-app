@@ -179,21 +179,25 @@ def _message(c, row):
         return None
     if row['kind'] == 'test':
         text = 'Mensaje de prueba de Slack.'
-    elif row['kind'] == 'digest':
-        setting = c.execute('SELECT * FROM slack_digest_settings WHERE installation_id=? AND user_id=? AND enabled=1', (row['installation_id'], row['user_id'])).fetchone()
+    elif row['kind'] in ('digest', 'digest_test'):
         local = _now().astimezone(app.STATS_ZONE)
-        if not setting or row['digest_day'] != local.date().isoformat() or not _scheduled(setting, local):
-            return None
+        if row['kind'] == 'digest':
+            setting = c.execute('SELECT * FROM slack_digest_settings WHERE installation_id=? AND user_id=? AND enabled=1', (row['installation_id'], row['user_id'])).fetchone()
+            if not setting or row['digest_day'] != local.date().isoformat() or not _scheduled(setting, local):
+                return None
         tasks = _digest_tasks(c, account, local.date().isoformat())
-        if not tasks:
+        if not tasks and row['kind'] == 'digest':
             return None
         lines = []
         for task in tasks[:5]:
             projects = app.task_projects(c, task['id'])
             names = [r['name'] for r in c.execute('SELECT id,name FROM projects ORDER BY name,id')
                      if r['id'] in projects and app.role(c, account, r['id'])]
-            lines.append(_task_text(task) + ' — ' + (', '.join(_escape(n) for n in names) if names else 'Sin proyecto'))
-        text = f'Resumen de tus tareas pendientes ({_escape(str(app.STATS_ZONE))}):\n' + '\n'.join(lines)
+            due = f" · Fecha límite: {_escape(task['due_date'])}" if task['due_date'] else ''
+            priority = ' · Prioridad alta' if task['priority'] == 'Alta' else ''
+            lines.append('• ' + _task_text(task) + ' — ' + (', '.join(_escape(n) for n in names) if names else 'Sin proyecto') + due + priority)
+        text = ('*Prueba del resumen diario*\n' if row['kind'] == 'digest_test' else '') + f"*Tus tareas pendientes* · {local.date().isoformat()} ({_escape(str(app.STATS_ZONE))})\n"
+        text += '\n'.join(lines) if lines else 'No tienes tareas pendientes.'
         text += f'\nRestantes: {max(0, len(tasks)-5)}\n<{_base_url()}/my-tasks|Ver mis tareas>'
     else:
         task = c.execute('''SELECT t.*,s.is_done FROM tasks t LEFT JOIN task_statuses s ON s.id=t.status_id

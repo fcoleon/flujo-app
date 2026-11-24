@@ -112,6 +112,7 @@ select:not([multiple]):not([size]){appearance:none;-webkit-appearance:none;curso
 .dialog:has(>.profile-version){padding-bottom:12px}
 .profile-logout{margin-right:auto}
 .profile-logout:hover:not(:disabled){background:#f1f0f2;border-color:#d8d6dc;color:#625e6d}
+.slack-digest-test{margin-bottom:12px}
 #project-panel-usuarios .person>div{min-width:0;overflow-wrap:anywhere}
 #project-panel-usuarios .person select{width:100px!important;flex:none;padding-right:24px!important}
 .task-create-actions{flex-wrap:wrap}.task-create-actions .task-create-cancel{margin-right:auto}.task-create-actions .task-create-button{background:#eeeafb;border-color:#ded5f7;color:#5d46b6}.task-create-actions .task-create-button:hover{background:#e2daf7}

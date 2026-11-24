@@ -275,6 +275,7 @@ def preferences():
 
 
 @blueprint.post('/api/slack/test')
+@blueprint.post('/api/slack/digest/test')
 def send_test():
     with closing(current_app.config['SLACK_DB']()) as c:
         with c:
@@ -287,8 +288,9 @@ def send_test():
             if not account:
                 return error('Cuenta Slack no vinculada', 409)
             stamp = datetime.now(timezone.utc).isoformat()
+            kind = 'digest_test' if request.path == '/api/slack/digest/test' else 'test'
             c.execute('''INSERT INTO slack_queue(installation_id,user_id,team_id,slack_user_id,kind,task_id,available_at,created_at,updated_at)
-                         VALUES(1,?,?,?,'test',NULL,?,?,?)''', (user['id'], account['team_id'], account['slack_user_id'], stamp, stamp, stamp))
+                         VALUES(1,?,?,?,?,NULL,?,?,?)''', (user['id'], account['team_id'], account['slack_user_id'], kind, stamp, stamp, stamp))
     return jsonify({'ok': True})
 
 
