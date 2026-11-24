@@ -15,7 +15,7 @@ const document={activeElement:null,createElement:element};
 const $=selector=>({'#mainSidebar':sidebar,'#sidebarToggle':button,'.topbar':topbar,'.shell':shell,'.shell>main':main,'#mobileSidebarToggle':trigger,'#mobileSidebarBackdrop':backdrop}[selector]);
 function sidebarCollapsed(){return true}
 function toggleSidebar(){button.desktopToggled=true}
-eval(source.slice(source.indexOf('function closeMobileSidebar('),source.indexOf('const renderWithoutMobileSidebar='))+`
+eval(source.slice(source.indexOf('function closeMobileSidebar('),source.indexOf("mobileSidebarMedia.addEventListener('change'"))+`
   setupMobileSidebar();
   assert(sidebar.inert&&!sidebar.classList.contains('is-collapsed'),'menú móvil cerrado y expandido al abrir');
   trigger.onclick();

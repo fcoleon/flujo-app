@@ -6,7 +6,7 @@ let active=1,data={projects:[]},html='',edited=false,tab='';
 function modal(value){html=value} function editProject(){edited=true} function setProjectSettingsTab(value){tab=value}
 const $=()=>({setAttribute(){},querySelector:()=>({focus(){}}),focus(){}});
 const assert=(value,message)=>{if(!value)throw Error(message)};
-eval(source.slice(source.indexOf('function projectMemberStack('),source.indexOf('const renderBoardWithoutAutomations='))+`
+eval(source.slice(source.indexOf('function projectMemberStack('),source.indexOf('function render(){\n  closeProjectFilters();renderShell();'))+`
   let members=Array.from({length:7},(_,i)=>({id:i+1,name:'Persona '+(i+1),username:'user'+(i+1),role:'editor'}));
   let project={id:1,name:'Tablero',role:'viewer',members:members.slice(0,5)};data.projects=[project];
   let stack=projectMemberStack(project);assert((stack.match(/class="avatar"/g)||[]).length===5&&!stack.includes('member-more'),'hasta cinco avatares');
