@@ -1,8 +1,9 @@
 import re
 import uuid
+from validation import integer_field, task_title, task_due_date, task_priority
 
 
-def post_task_types(c,u,path,b,task_title,can_task,integer_field,role,task_due_date,ensure_base_type,now,default_status,record,notify_assignment,metric_event,automate,respond,create_type):
+def post_task_types(c,u,path,b,can_task,role,ensure_base_type,now,default_status,record,notify_assignment,metric_event,automate,respond,create_type):
             if path=='/api/tasks':
                 title=task_title(b.get('title','')); parent=b.get('parent_id') or None
                 if parent:
@@ -96,7 +97,7 @@ def post_task_types(c,u,path,b,task_title,can_task,integer_field,role,task_due_d
                 new_status=c.execute('SELECT status_id FROM tasks WHERE id=?',(tid,)).fetchone()['status_id']
                 if new_status!=task['status_id']: automate(c,tid,[('status',task['status_id'],new_status)],u['id'])
 
-def post_tasks(c,u,path,b,integer_field,can_task,delete_task,current_user,respond,task_title,task_due_date,task_priority,sanitize_description,record,notify_assignment,automate,role,apply_project_base):
+def post_tasks(c,u,path,b,can_task,delete_task,current_user,respond,sanitize_description,record,notify_assignment,automate,role,apply_project_base):
             if path=='/api/task/delete':
                 tid=integer_field(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')
@@ -171,4 +172,3 @@ def post_tasks(c,u,path,b,integer_field,can_task,delete_task,current_user,respon
                     c.execute('INSERT INTO placements VALUES(?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM placements WHERE column_id=?))',(tid,p,col['id'],col['id']))
                     changed=apply_project_base(c,tid,p)
                     record(c,tid,u['id'],'agregó la tarea a un proyecto',changed)
-

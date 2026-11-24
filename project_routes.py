@@ -1,10 +1,11 @@
 import re
 import uuid
 import automations
+from validation import integer_field, text_field
 from flask import g
 
 
-def post(c,u,path,b,integer_field,text_field,role,respond,ensure_base_type,COLUMN_COLORS,record,delete_task,automate):
+def post(c,u,path,b,role,respond,ensure_base_type,COLUMN_COLORS,record,delete_task,automate):
     if path=='/api/projects':
         if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear proyectos')
         name=text_field(b,'name').strip()

@@ -12,6 +12,7 @@ from contextlib import closing
 from flask import Flask, g, jsonify, make_response, request, send_from_directory, send_file, abort, render_template_string, redirect
 from werkzeug.middleware.proxy_fix import ProxyFix
 from descriptions import DescriptionSanitizer, sanitize_description
+from validation import text_field, integer_field, task_title, task_due_date, task_priority
 from auth import hashpw, current_user, session_response, create_session, rotate_session, SESSION_SECONDS
 import time
 from pathlib import Path
@@ -275,31 +276,6 @@ if os.environ.get('FLUJO_BEHIND_PROXY') == '1':
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=0, x_port=0, x_prefix=0)
 
 def respond(data,status=200): return jsonify(data),status
-
-def text_field(body,key):
-    value=body.get(key)
-    if not isinstance(value,str): raise ValueError(f"El campo '{key}' debe ser texto")
-    return value
-
-def integer_field(value):
-    try: return int(value)
-    except (TypeError,ValueError,OverflowError): raise ValueError('Identificador inválido') from None
-
-def task_title(value):
-    if not isinstance(value,str) or not value.strip(): raise ValueError('El nombre es obligatorio')
-    if re.search(r'[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]',value): raise ValueError('El nombre de la tarea no puede contener saltos de línea')
-    return value.strip()
-
-def task_due_date(value):
-    if value is None or value=='': return None
-    if not isinstance(value,str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}',value): raise ValueError('Fecha límite inválida')
-    try: datetime.strptime(value,'%Y-%m-%d')
-    except ValueError: raise ValueError('Fecha límite inválida') from None
-    return value
-
-def task_priority(value):
-    if value not in ('Baja','Normal','Alta'): raise ValueError('Prioridad inválida')
-    return value
 
 @app.errorhandler(413)
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
@@ -634,15 +610,15 @@ def api_post():
             if path in ('/api/tasks','/api/task/type-status','/api/task/update','/api/task/move','/api/automations/save','/api/automations/delete','/api/automations/reorder','/api/task-types/delete','/api/task-types/update','/api/workspace/block','/api/columns/delete','/api/tokens','/api/tokens/revoke'):
                 c.execute('BEGIN IMMEDIATE')
             if path in ('/api/workspace/update','/api/workspace/block','/api/profile','/api/users'):
-                result=workspace_routes.post(c,u,path,b,integer_field,text_field,current_user,respond,hashpw,rotate_session,session_response)
+                result=workspace_routes.post(c,u,path,b,current_user,respond,hashpw,rotate_session,session_response)
             elif path in ('/api/projects','/api/projects/update','/api/members','/api/columns','/api/columns/rename','/api/columns/update','/api/columns/reorder','/api/columns/delete'):
-                result=project_routes.post(c,u,path,b,integer_field,text_field,role,respond,ensure_base_type,COLUMN_COLORS,record,delete_task,automate)
+                result=project_routes.post(c,u,path,b,role,respond,ensure_base_type,COLUMN_COLORS,record,delete_task,automate)
             elif path in ('/api/tasks','/api/task-types','/api/task-types/delete','/api/task-types/update','/api/task/type-status'):
-                result=task_routes.post_task_types(c,u,path,b,task_title,can_task,integer_field,role,task_due_date,ensure_base_type,now,default_status,record,notify_assignment,metric_event,automate,respond,create_type)
+                result=task_routes.post_task_types(c,u,path,b,can_task,role,ensure_base_type,now,default_status,record,notify_assignment,metric_event,automate,respond,create_type)
             elif path in ('/api/comments','/api/comments/update'):
-                result=comment_routes.post(c,u,path,b,integer_field,can_task,respond,now,record)
+                result=comment_routes.post(c,u,path,b,can_task,respond,now,record)
             elif path in ('/api/task/delete','/api/task/update','/api/task/move','/api/task/project'):
-                result=task_routes.post_tasks(c,u,path,b,integer_field,can_task,delete_task,current_user,respond,task_title,task_due_date,task_priority,sanitize_description,record,notify_assignment,automate,role,apply_project_base)
+                result=task_routes.post_tasks(c,u,path,b,can_task,delete_task,current_user,respond,sanitize_description,record,notify_assignment,automate,role,apply_project_base)
             elif path in ('/api/automations/save','/api/automations/delete','/api/automations/reorder'):
                 result=automation_routes.post(c,u,path,b,role,respond)
             elif path in ('/api/tokens','/api/tokens/revoke'):
