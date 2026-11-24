@@ -53,6 +53,18 @@ class AutomationsIntegrationTest(unittest.TestCase):
     def runs(self, project=1, user=1):
         return self.request('GET', f'automations/runs?project_id={project}', user=user).get_json()['runs']
 
+    def test_save_rollback(self):
+        payload=dict(project_id=1,name='Regla',enabled=True,trigger={'type':'created'},
+                     conditions=[],actions=[{'type':'priority','value':'Alta'}])
+        original=app.respond
+        def respond(data,*args):
+            if 'rule' in data: raise ValueError('Error al preparar respuesta')
+            return original(data,*args)
+        with patch.object(app,'respond',side_effect=respond):
+            self.post('automations/save',payload,status=400)
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM automation_rules').fetchone()[0],0)
+
     def test_crud_validation_and_permissions(self):
         payload = dict(project_id=1, name='  Regla  ', enabled=True, trigger={'type': 'created'},
                        conditions=[], actions=[{'type': 'priority', 'value': 'Alta'}])

@@ -1,22 +1,22 @@
-// Run with: jsc tests/test_slack.js
+// Run with: node tests/test_slack.js
 const assert=(value,message)=>{if(!value)throw Error(message||'Assertion failed')};
 assert.strictEqual=(a,b)=>assert(a===b,`${a} !== ${b}`);
 assert.deepStrictEqual=(a,b)=>assert(JSON.stringify(a)===JSON.stringify(b),JSON.stringify(a));
-const source=readFile('static/app.js');
+const source=require('fs').readFileSync('static/slack.js','utf8');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let data={user:{admin:true},projects:[{id:1,name:'Admin <proyecto>',role:'admin'},{id:2,name:'Lector',role:'viewer'}]};
 let requests=[],html='',form,dialog,handlers={},messages=[],destination,previous={hidden:false},focused=false,confirmations=0;
 const group=(id,assignment,comment,completion)=>({dataset:{project:id},insertAdjacentHTML(position,value){html+=value},remove(){},querySelector(s){return s.includes('assignment')?{checked:assignment}:s.includes('comment')?{checked:comment}:completion==null?null:{checked:completion}}});
 let footer={classList:{add(){}},insertAdjacentHTML(position,value){html+=value}};
 form={elements:{enabled:{checked:true},time:{value:'540'}},get firstElementChild(){return footer},before(){},prepend(){},addEventListener(name,fn){if(name==='change')this.change=fn},querySelector(s){return s==='.dialog-actions'?footer:{insertAdjacentHTML(position,value){html+=value}}},querySelectorAll(s){return s==='[data-project]'?[group('',true,false,null),group('1',false,true,true),group('2',true,true,null)]:[{value:'0'},{value:'4'}]}};
-dialog={isConnected:true,get firstElementChild(){return form},setAttribute(){},set innerHTML(value){html=value},get innerHTML(){return html},showModal(){},close(){handlers.close()},remove(){},addEventListener(name,fn){handlers[name]=fn},querySelector(s){if(s==='button')return {};if(s==='#slackForm')return form;if(s==='#slackError')return {textContent:''};if(s==='#slackTitle')return {classList:{add(){}},insertAdjacentHTML(position,icon){html+=icon}}},querySelectorAll(){return []}};
+dialog={isConnected:true,classList:{add(){}},get firstElementChild(){return form},setAttribute(){},set innerHTML(value){html=value},get innerHTML(){return html},showModal(){},close(){handlers.close()},remove(){},addEventListener(name,fn){handlers[name]=fn},querySelector(s){if(s==='button')return {};if(s==='#slackForm')return form;if(s==='#slackError'||s==='[role=status], #slackError')return {textContent:''};if(s==='#slackTitle')return {classList:{add(){}},insertAdjacentHTML(position,icon){html+=icon}}},querySelectorAll(){return []}};
 const document={activeElement:{focus(){focused=true}},querySelector(){return previous},createElement(tag){return tag==='dialog'?dialog:{appendChild(){}}},body:{appendChild(){}}};
 function slackIcon(){return '<svg class="slack-icon"></svg>'}
 const status={configured:true,installation:{team_name:'Equipo',team_id:'T1'},account:{slack_user_id:'U1'},preferences:[{project_id:null,assignment:true},{project_id:1,completion:true}],summary:{enabled:true,hour:9,weekdays:[0,4]}};
 async function api(path,body){requests.push({path,body});return path==='slack/status'?status:path.endsWith('/start')?{url:'https://slack.com/oauth'}:{}}
 function toast(message){messages.push(message)} function confirm(){confirmations++;return true}
 const location={assign(url){destination=url}};
-eval(source.slice(source.indexOf('function slackPreferenceFields('),source.indexOf('async function setWorkspaceBlocked('))+`
+eval(source+`
   (async()=>{
     slackSettings();await Promise.resolve();
     assert(previous.hidden,'oculta el modal anterior');
@@ -50,5 +50,5 @@ eval(source.slice(source.indexOf('function slackPreferenceFields('),source.index
     data.user.admin=false;slackSettings();await Promise.resolve();
     assert(!html.includes('data-action="disconnect"'));
     assert(html.includes('<table class="slack-preferences">'));
-  })().catch(err=>{print(err.stack);quit(1)});
+  })().catch(err=>{console.error(err.stack);process.exitCode=1});
 `);

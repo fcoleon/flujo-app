@@ -1,5 +1,5 @@
 // Run with: node tests/test_project_filters.js
-const source=require('fs').readFileSync('static/app.js','utf8');
+const source=require('fs').readFileSync('static/project-filters.js','utf8');
 let storage=new Map(),active=10,statusMenu=null,statusMenuTrigger=null,renders=0,panel,trigger;
 let data={user:{id:9},stats_timezone:'America/Santiago',users:[{id:9,name:'Yo'},{id:8,name:'Otra'}],projects:[],tasks:[]};
 const sessionStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)};
@@ -12,7 +12,7 @@ const document={body:{appendChild(){}},createElement(){return panel={style:{},of
 const window={innerWidth:1000,innerHeight:800,addEventListener(){},removeEventListener(){}};
 const $=selector=>selector==='.project-filter-trigger'?trigger:null;
 const assert=(value,message)=>{if(!value)throw Error(message)};
-eval(source.slice(source.indexOf('const projectFilterCache='),source.indexOf('const listCollapsedState='))+`
+eval(source+`
   let type={id:4,name:'Tipo',statuses:[{id:7,name:'Listo'}]},project={id:10,public_id:'p1',types:[type]};data.projects=[project];
   let f=projectFilters(project),dates=projectFilterDates('2026-01-05');
   assert(dates.yesterday==='2026-01-04'&&dates.weekStart==='2026-01-05'&&dates.weekEnd==='2026-01-11','semana y ayer');

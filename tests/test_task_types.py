@@ -59,6 +59,26 @@ class TaskTypesTest(unittest.TestCase):
         self.assertEqual(self.post('tasks',{'title':'Responsable inválido','project_id':1,'column_id':1,'assignee_id':'999'})[0],400)
         self.assertEqual(self.post('tasks',{'title':'Fecha inválida','project_id':1,'column_id':1,'due_date':'mañana'})[0],400)
 
+    def test_create_task_rolls_back_if_final_notice_fails(self):
+        real_role=app.role
+        def role(c,u,project):
+            if app.g.disabled_automations: raise PermissionError('Error al preparar aviso')
+            return real_role(c,u,project)
+        def automate(*args):
+            app.g.disabled_automations.append({'project_id':1})
+        with patch.object(app,'role',side_effect=role), patch.object(app,'automate',side_effect=automate):
+            self.assertEqual(self.post('tasks',{'title':'No guardar','project_id':1,'column_id':1})[0],403)
+        with app.db() as c:
+            for table in ('tasks','placements','history','metric_events'):
+                self.assertEqual(c.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],0)
+
+    def test_task_update_keeps_permissions_and_ignores_unknown_sql_fields(self):
+        task=self.post('tasks',{'title':'Original','project_id':1,'column_id':1})[1]['id']
+        self.assertEqual(self.post('task/update',{'id':task,'priority':'Alta'},user=3)[0],403)
+        self.assertEqual(self.post('task/update',{'id':task,'priority':'Alta','priority=? WHERE id=1; DELETE FROM tasks;--':'x'},user=2)[0],200)
+        with app.db() as c:
+            self.assertEqual(tuple(c.execute('SELECT title,priority FROM tasks WHERE id=?',(task,)).fetchone()),('Original','Alta'))
+
     def test_update_validates_dates_and_priorities(self):
         task=self.post('tasks',{'title':'Tarea','project_id':1,'column_id':1})[1]['id']
         for field,value in [('due_date','mañana'),('due_date','2026-02-30'),('due_date',[]),('priority','Urgente'),('priority',None)]:

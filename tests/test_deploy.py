@@ -51,11 +51,11 @@ class DeploymentConfigTest(unittest.TestCase):
             (root / 'templates').mkdir()
             (root / 'templates' / 'index.html').touch()
             modules = ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py',
-                       'slack_notify.py', 'slack_auth.py', 'automations.py', 'mcp_server.py')
+                       'slack_notify.py', 'slack_auth.py', 'automations.py', 'automation_routes.py', 'workspace_routes.py', 'project_routes.py', 'comment_routes.py', 'task_routes.py', 'mcp_server.py')
             for name in modules:
                 (root / name).touch()
             with patch.object(deploy, 'APP_DIR', root):
-                for name in ('slack_auth.py', 'automations.py'):
+                for name in ('slack_auth.py', 'automations.py', 'automation_routes.py', 'workspace_routes.py', 'project_routes.py', 'comment_routes.py', 'task_routes.py'):
                     path = root / name
                     with self.subTest(name=name, failure='missing'):
                         path.unlink()
@@ -69,6 +69,13 @@ class DeploymentConfigTest(unittest.TestCase):
                                 raise subprocess.CalledProcessError(1, command)
                         with patch.object(deploy, 'as_user', side_effect=check), self.assertRaisesRegex(ValueError, re.escape(name)):
                             deploy.prepare_venv('ubuntu', root / 'tasks.db', 'UTC')
+                for name in ('navigation.js','slack.js','project-filters.js','attachments.js','task-detail.js'):
+                    path=root / 'static' / name
+                    def check(user, *command):
+                        if command == ('test', '-r', path):
+                            raise subprocess.CalledProcessError(1, command)
+                    with self.subTest(name=name), patch.object(deploy, 'as_user', side_effect=check), self.assertRaisesRegex(ValueError, re.escape(name)):
+                        deploy.prepare_venv('ubuntu', root / 'tasks.db', 'UTC')
 
     def test_slack_supervisor_migration_is_idempotent_and_rejects_conflicts(self):
         with tempfile.TemporaryDirectory() as tmp:

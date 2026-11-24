@@ -1,5 +1,6 @@
 // Run with: node tests/test_my_tasks.js
 const source=require('fs').readFileSync('static/app.js','utf8');
+const navigation=require('fs').readFileSync('static/navigation.js','utf8');
 let data={user:{id:1},projects:[{id:10,name:'A'},{id:20,name:'B'}],tasks:[
   {id:1,title:'Compartida',assignee_id:1,due_date:'2026-01-03',priority:'Normal',can_edit:true,has_projects:true,placements:[{project_id:10},{project_id:20}],inherited_project_ids:[],done:false},
   {id:2,title:'Subtarea',assignee_id:1,due_date:'2026-01-01',priority:'Alta',can_edit:false,has_projects:true,placements:[],inherited_project_ids:[10],parent_id:1,done:false},
@@ -15,7 +16,7 @@ const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 function taskStatus(t){return {is_done:t.done}} function matchesSearch(t,q){return t.title.toLowerCase().includes(q.toLowerCase())}
 function taskQuickControls(t,editable){return {statusControl:editable?'EDITAR':'LECTURA',dateControl:'FECHA',priorityControl:'PRIORIDAD'}}
 const assert=(value,message)=>{if(!value)throw Error(message)};
-eval(source.slice(source.indexOf('function taskContextProjects('),source.indexOf('function taskPath('))+
+eval(navigation.slice(navigation.indexOf('function taskContextProjects('),navigation.indexOf('function taskPath('))+
      source.slice(source.indexOf("let mineBoard='all'"),source.indexOf('function render(){\n  closeProjectFilters();renderShell();'))+`
   assert(myTasks().map(t=>t.id).join(',')==='2,1,3','solo asignadas y en curso, ordenadas por fecha');
   mineBoard='20';assert(myTasks().map(t=>t.id).join(',')==='1','tarea compartida aparece una sola vez');
