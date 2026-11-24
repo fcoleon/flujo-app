@@ -59,6 +59,43 @@ class TaskTypesTest(unittest.TestCase):
         self.assertEqual(self.post('tasks',{'title':'Responsable inválido','project_id':1,'column_id':1,'assignee_id':'999'})[0],400)
         self.assertEqual(self.post('tasks',{'title':'Fecha inválida','project_id':1,'column_id':1,'due_date':'mañana'})[0],400)
 
+    def test_update_validates_dates_and_priorities(self):
+        task=self.post('tasks',{'title':'Tarea','project_id':1,'column_id':1})[1]['id']
+        for field,value in [('due_date','mañana'),('due_date','2026-02-30'),('due_date',[]),('priority','Urgente'),('priority',None)]:
+            with self.subTest(field=field,value=value):
+                self.assertEqual(self.post('task/update',{'id':task,field:value})[0],400)
+        self.assertEqual(self.post('task/update',{'id':task,'due_date':'2026-12-01','priority':'Alta'})[0],200)
+        self.assertEqual(self.post('task/update',{'id':task,'due_date':''})[0],200)
+
+    def test_invalid_json_field_types_return_json_errors(self):
+        for path,payload in [('projects',{'name':['x']}),('projects',{'name':'x','color':[]}),('users',{'name':'X','username':'x','password':12345678}),
+                             ('columns',{'project_id':1,'name':[]}),('task/update',{'id':[]}),
+                             ('task/move',{'id':1,'project_id':1,'column_id':1,'order':[{}]})]:
+            with self.subTest(path=path):
+                response=self.client_for(1).post('/api/'+path,json=payload)
+                self.assertEqual(response.status_code,400)
+                self.assertIn('error',response.json)
+
+    def test_workspace_bulk_load_preserves_permissions_and_limits_queries(self):
+        with app.db() as c:
+            typ=app.ensure_base_type(c,1); status=app.default_status(c,typ)
+            for i in range(100):
+                tid=c.execute('INSERT INTO tasks(title,created_at,type_id,status_id,public_id) VALUES(?,?,?,?,?)',
+                              (str(i),app.now(),typ,status,str(uuid.uuid4()))).lastrowid
+                c.execute('INSERT INTO placements VALUES(?,?,?,?)',(tid,1,1,i))
+            orphan=c.execute('INSERT INTO tasks(title,created_at,type_id,status_id,assignee_id,public_id) VALUES(?,?,?,?,?,?)',
+                             ('Padre',app.now(),typ,status,2,str(uuid.uuid4()))).lastrowid
+            child=c.execute('INSERT INTO tasks(title,created_at,type_id,status_id,parent_id,public_id) VALUES(?,?,?,?,?,?)',
+                            ('Hija',app.now(),typ,status,orphan,str(uuid.uuid4()))).lastrowid
+            user=c.execute('SELECT id,name,username,admin FROM users WHERE id=2').fetchone()
+            expected={row['id']:(app.can_task(c,user,row['id']),app.can_task(c,user,row['id'],True)) for row in c.execute('SELECT id FROM tasks').fetchall()}
+            queries=[];c.set_trace_callback(queries.append)
+            result=app.workspace_data(c,user,1);c.set_trace_callback(None)
+            actual={t['id']:t['can_edit'] for t in result['tasks']}
+            self.assertEqual(actual,{tid:write for tid,(read,write) in expected.items() if read})
+            self.assertIn(child,actual)
+            self.assertLess(len(queries),30)
+
     def test_status_history_and_existing_task_migration(self):
         task=self.post('tasks',{'title':'Tarea','project_id':1,'column_id':1})[1]['id']
         with app.db() as c:

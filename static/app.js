@@ -826,7 +826,7 @@ function mcpTokens(){
   dialog.addEventListener('cancel',e=>{e.preventDefault();close()});
   dialog.addEventListener('close',()=>{dialog.remove();if(previous)previous.hidden=false;returnFocus?.focus()});
   const when=value=>value?new Date(value).toLocaleString('es-CL',{dateStyle:'short',timeStyle:'short'}):'sin uso';
-  const item=t=>`<li${t.revoked_at?' class="revoked"':''}><div><strong>${esc(t.name)}</strong><small>Creado ${when(t.created_at)} · Último uso ${when(t.last_used_at)}</small></div>${t.revoked_at?'<span class="mcp-token-state">Revocado</span>':`<button type="button" class="outline" data-revoke="${t.id}">Revocar</button>`}</li>`;
+  const item=t=>`<li${t.revoked_at?' class="revoked"':''}><div><strong>${esc(t.name)}</strong><small>Creado ${when(t.created_at)}</small></div>${t.revoked_at?'<span class="mcp-token-state">Revocado</span>':`<button type="button" class="outline" data-revoke="${t.id}">Revocar</button>`}</li>`;
   async function load(){
     try{
       let {tokens}=await api('tokens');if(!dialog.isConnected)return;

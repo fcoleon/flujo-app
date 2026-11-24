@@ -4,7 +4,7 @@ Aplicación interna de gestión de tareas con tableros Kanban, un único workspa
 
 ## Requisitos e inicio
 
-Se requiere Python 3.9 o superior y una base de datos de zonas horarias del sistema. Desde la raíz del proyecto:
+Se requiere Python 3.13 o superior y una base de datos de zonas horarias del sistema. Desde la raíz del proyecto:
 
 ```sh
 python3 -m venv .venv

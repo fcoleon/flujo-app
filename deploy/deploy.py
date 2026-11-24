@@ -294,10 +294,10 @@ def prepare_venv(user, db_path, timezone, create=True):
     # También detecta un .venv copiado de otro sistema o una zona horaria inexistente.
     try:
         as_user(user, python, '-c', 'import sys; from zoneinfo import ZoneInfo; '
-                'assert sys.version_info >= (3, 9), "Se requiere Python 3.9 o superior"; '
+                'assert sys.version_info >= (3, 13), "Se requiere Python 3.13 o superior"; '
                 'ZoneInfo(sys.argv[1])', timezone)
     except (subprocess.CalledProcessError, OSError):
-        fail('El Python de .venv no funciona, es anterior a 3.9 o no reconoce la zona horaria. '
+        fail('El Python de .venv no funciona, es anterior a 3.13 o no reconoce la zona horaria. '
              'Revisa python3-venv y tzdata; recrea .venv en Ubuntu si fue copiado.')
     if not db_path.parent.is_dir():
         fail(f'No existe el directorio de la base de datos: {db_path.parent}')

@@ -85,7 +85,7 @@ class McpTokenTest(unittest.TestCase):
             user,reason=app.mcp_token_user(c,token)
             self.assertEqual((user['id'],reason),(1,None))
             last=c.execute('SELECT last_used_at FROM mcp_tokens WHERE token_hash=?',(app.mcp_token_hash(token),)).fetchone()['last_used_at']
-            self.assertIsNotNone(last)
+            self.assertIsNone(last)
             c.execute('UPDATE mcp_tokens SET revoked_at=? WHERE token_hash=?',(app.now(),app.mcp_token_hash(token)))
             self.assertEqual(app.mcp_token_user(c,token),(None,'invalid'))
         with app.db() as c:
@@ -196,9 +196,23 @@ class McpToolsTest(unittest.TestCase):
         detail = self.data(self.call('get_project', {'project': self.public_id}, token='viewer'))
         self.assertEqual((detail['name'], detail['role']), ('Visible', 'viewer'))
         self.assertEqual(len(detail['columns']), 1)
+        self.assertEqual([t['title'] for t in detail['columns'][0]['tasks']], ['Comprar pan'])
+        self.assertFalse(detail['tasks_has_more'])
         self.assertEqual([m['username'] for m in detail['members']], ['uid2'])
         admin_projects = self.data(self.call('list_projects', token='admin'))['projects']
         self.assertEqual({p['name'] for p in admin_projects}, {'Visible', 'Privado'})
+
+    def test_project_tasks_are_limited_and_exclude_completed(self):
+        with app.db() as c:
+            row=c.execute('SELECT type_id,status_id FROM tasks WHERE id=1').fetchone()
+            for i in range(105):
+                tid=c.execute('INSERT INTO tasks(title,created_at,type_id,status_id,public_id) VALUES(?,?,?,?,?)',
+                              (f'Tarea {i}',app.now(),row['type_id'],row['status_id'],str(uuid4()))).lastrowid
+                c.execute('INSERT INTO placements VALUES(?,?,?,?)',(tid,1,1,i+3))
+        detail=self.data(self.call('get_project',{'project':1}))
+        self.assertEqual(len(detail['columns'][0]['tasks']),100)
+        self.assertTrue(detail['tasks_has_more'])
+        self.assertNotIn('Terminar informe',[t['title'] for t in detail['columns'][0]['tasks']])
 
     def test_task_listing_applies_membership_and_filters(self):
         titles = lambda result: {t['title'] for t in self.data(result)['tasks']}

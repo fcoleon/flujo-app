@@ -55,8 +55,7 @@ class BearerAuth:
         scheme, _, token = authorization.partition(' ')
         u = reason = None
         if scheme.lower() == 'bearer' and token.strip():
-            # mcp_token_user escribe last_used_at: la transacción se confirma aquí.
-            with closing(app.db()) as c, c:
+            with closing(app.db()) as c:
                 u, reason = app.mcp_token_user(c, token.strip())
         if u is None:
             return await reply(send, 401, {'error': 'Token inválido o revocado'},
@@ -136,7 +135,7 @@ async def list_projects() -> dict:
 
 @mcp.tool()
 async def get_project(project: str | int) -> dict:
-    """Detalle de un proyecto por id o enlace público: columnas con sus tareas, tipos, miembros y tu rol."""
+    """Detalle de un proyecto: columnas con hasta 100 tareas en curso en total, tipos, miembros y tu rol."""
     u = user()
     with closing(app.db()) as c:
         p = project_row(c, project)
@@ -145,13 +144,23 @@ async def get_project(project: str | int) -> dict:
         if not access:
             raise ToolError('Proyecto no encontrado')
         columns = []
+        remaining = MAX_LIMIT
+        has_more = False
         for col in c.execute('SELECT * FROM columns WHERE project_id=? ORDER BY position,id', (p['id'],)):
             item = dict(col)
             item['task_count'] = c.execute('SELECT COUNT(*) FROM placements WHERE project_id=? AND column_id=?',
                                            (p['id'], col['id'])).fetchone()[0]
+            rows = c.execute('''SELECT t.id,t.public_id,t.title,t.priority,t.due_date,s.name AS status
+                                FROM placements pl JOIN tasks t ON t.id=pl.task_id
+                                JOIN task_statuses s ON s.id=t.status_id
+                                WHERE pl.project_id=? AND pl.column_id=? AND s.is_done=0
+                                ORDER BY pl.position,t.id LIMIT ?''', (p['id'],col['id'],remaining+1)).fetchall()
+            item['tasks'] = [dict(row) for row in rows[:remaining]]
+            has_more = has_more or len(rows)>remaining
+            remaining -= len(item['tasks'])
             columns.append(item)
         return {'id': p['id'], 'public_id': p['public_id'], 'name': p['name'], 'color': p['color'],
-                'description': p['description'], 'role': access, 'columns': columns,
+                'description': p['description'], 'role': access, 'columns': columns, 'tasks_has_more': has_more,
                 'types': [app.type_data(c, row) for row in c.execute('SELECT * FROM task_types WHERE project_id=? ORDER BY is_base DESC,id', (p['id'],))],
                 'members': [dict(row) for row in c.execute('''SELECT u.id,u.name,u.username,m.role FROM members m
                                                                JOIN users u ON u.id=m.user_id

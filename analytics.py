@@ -9,6 +9,9 @@ def timestamp(value):
 def previous_status_time(c, task_id, status_id):
     rows=c.execute('''SELECT status_id,created_at,message FROM history WHERE task_id=? AND status_id IS NOT NULL
                       ORDER BY created_at,id''',(task_id,)).fetchall()
+    return status_time_from_rows(rows,status_id)
+
+def status_time_from_rows(rows, status_id):
     seconds=0
     for current,next_row in zip(rows,rows[1:]):
         if current['status_id']==status_id:

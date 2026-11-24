@@ -51,7 +51,6 @@ def mcp_token_user(c,token):
                      FROM mcp_tokens t JOIN users u ON u.id=t.user_id
                      WHERE t.token_hash=? AND t.revoked_at IS NULL''',(digest,)).fetchone()
     if not row: return None,'invalid'
-    c.execute('UPDATE mcp_tokens SET last_used_at=? WHERE token_hash=?',(now(),digest))
     u={'id':row['id'],'name':row['name'],'username':row['username'],'admin':row['admin']}
     if row['blocked']: return u,'blocked'
     if row['must_change_password']: return u,'password'
@@ -277,10 +276,25 @@ def text_field(body,key):
     if not isinstance(value,str): raise ValueError(f"El campo '{key}' debe ser texto")
     return value
 
+def integer_field(value):
+    try: return int(value)
+    except (TypeError,ValueError,OverflowError): raise ValueError('Identificador inválido') from None
+
 def task_title(value):
     if not isinstance(value,str) or not value.strip(): raise ValueError('El nombre es obligatorio')
     if re.search(r'[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]',value): raise ValueError('El nombre de la tarea no puede contener saltos de línea')
     return value.strip()
+
+def task_due_date(value):
+    if value is None or value=='': return None
+    if not isinstance(value,str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}',value): raise ValueError('Fecha límite inválida')
+    try: datetime.strptime(value,'%Y-%m-%d')
+    except ValueError: raise ValueError('Fecha límite inválida') from None
+    return value
+
+def task_priority(value):
+    if value not in ('Baja','Normal','Alta'): raise ValueError('Prioridad inválida')
+    return value
 
 @app.errorhandler(413)
 def too_large(error): return respond({'error':'Solicitud demasiado grande'},413)
@@ -465,28 +479,50 @@ def attachment(attachment_id):
             return respond({'error':'No se pudo descargar el archivo'},503)
 
 def workspace_data(c,u,revision):
+    types={}
+    for row in c.execute('SELECT * FROM task_types'):
+        types[row['id']]={**dict(row),'statuses':[]}
+    for row in c.execute('SELECT * FROM task_statuses ORDER BY position,id'):
+        if row['type_id'] in types: types[row['type_id']]['statuses'].append(dict(row))
     projects=[]
     for p in c.execute('SELECT * FROM projects ORDER BY id').fetchall():
         r=role(c,u,p['id'])
         if r:
             d=dict(p); d['role']=r
             d['columns']=[dict(x) for x in c.execute('SELECT * FROM columns WHERE project_id=? ORDER BY position,id',(p['id'],))]
-            d['types']=[type_data(c,x) for x in c.execute('SELECT * FROM task_types WHERE project_id=? ORDER BY is_base DESC,id',(p['id'],))]
+            d['types']=sorted((t for t in types.values() if t['project_id']==p['id']),key=lambda t:(-t['is_base'],t['id']))
             d['members']=[dict(x) for x in c.execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=?',(p['id'],))]
             projects.append(d)
-    allowed={p['id'] for p in projects}; tasks=[]
-    for t in c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count,COALESCE(a.attachment_count,0) AS attachment_count FROM tasks t
+    allowed={p['id'] for p in projects}; writable={p['id'] for p in projects if p['role'] in ('admin','editor')}; tasks=[]
+    rows=c.execute('''SELECT t.*,COALESCE(cm.comment_count,0) AS comment_count,COALESCE(a.attachment_count,0) AS attachment_count FROM tasks t
                           LEFT JOIN (SELECT task_id,COUNT(*) AS comment_count FROM comments GROUP BY task_id) cm ON cm.task_id=t.id
                           LEFT JOIN (SELECT task_id,COUNT(*) AS attachment_count FROM task_attachments GROUP BY task_id) a ON a.task_id=t.id
-                          ORDER BY t.id DESC''').fetchall():
-        placements=[dict(x) for x in c.execute('SELECT * FROM placements WHERE task_id=?',(t['id'],)) if x['project_id'] in allowed]
-        if can_task(c,u,t['id']):
-            projects_for_task=task_projects(c,t['id']); explicit={r['project_id'] for r in c.execute('SELECT project_id FROM placements WHERE task_id=?',(t['id'],))}
-            d=dict(t); d['placements']=placements; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=can_task(c,u,t['id'],True); d['has_projects']=bool(projects_for_task); type_row=c.execute('SELECT * FROM task_types WHERE id=?',(t['type_id'],)).fetchone(); d['task_type']=type_data(c,type_row) if type_row else None
-            status_entry=c.execute('SELECT created_at,message FROM history WHERE task_id=? AND status_id IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1',(t['id'],)).fetchone()
+                          ORDER BY t.id DESC''').fetchall()
+    by_id={t['id']:t for t in rows}; placements={}; histories={}; contexts={}
+    for row in c.execute('SELECT * FROM placements'):
+        placements.setdefault(row['task_id'],[]).append(dict(row))
+    for row in c.execute('SELECT task_id,status_id,created_at,message FROM history WHERE status_id IS NOT NULL ORDER BY task_id,created_at,id'):
+        histories.setdefault(row['task_id'],[]).append(row)
+    def context(tid):
+        chain=[]; seen=set()
+        while tid in by_id and tid not in contexts and tid not in seen:
+            seen.add(tid); chain.append(tid); tid=by_id[tid]['parent_id']
+        inherited,assigned=contexts.get(tid,(set(),False))
+        for item in reversed(chain):
+            inherited=inherited|{p['project_id'] for p in placements.get(item,[])}
+            assigned=assigned or by_id[item]['assignee_id']==u['id']
+            contexts[item]=(inherited,assigned)
+        return contexts[chain[0]] if chain else contexts.get(tid,(set(),False))
+    for t in rows:
+        projects_for_task,assigned=context(t['id'])
+        if u['admin'] or (bool(projects_for_task & allowed) if projects_for_task else assigned):
+            own=placements.get(t['id'],[]); explicit={p['project_id'] for p in own}
+            d=dict(t); d['placements']=[p for p in own if p['project_id'] in allowed]; d['inherited_project_ids']=sorted((projects_for_task-explicit)&allowed); d['can_edit']=bool(u['admin'] or (projects_for_task & writable if projects_for_task else assigned)); d['has_projects']=bool(projects_for_task); d['task_type']=types.get(t['type_id'])
+            history=histories.get(t['id'],[]); status_entry=history[-1] if history else None
             d['status_since']=status_entry['created_at'] if status_entry else None; d['status_since_partial']=bool(status_entry and status_entry['message']=='inicio del registro de tiempo por estado')
-            d['status_previous_seconds'],d['status_total_partial']=metrics.previous_status_time(c,t['id'],t['status_id']); tasks.append(d)
-    return {'attachments_enabled':all(SETTINGS['backblaze'].values()),'user':dict(u),'version':VERSION,'revision':revision,'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':type_data(c,c.execute('SELECT * FROM task_types WHERE project_id IS NULL AND is_base=1').fetchone())}
+            d['status_previous_seconds'],d['status_total_partial']=metrics.status_time_from_rows(history,t['status_id']); tasks.append(d)
+    base=next(t for t in types.values() if t['project_id'] is None and t['is_base'])
+    return {'attachments_enabled':all(SETTINGS['backblaze'].values()),'user':dict(u),'version':VERSION,'revision':revision,'workspace_name':c.execute("SELECT value FROM app_meta WHERE key='workspace_name'").fetchone()['value'],'users':[dict(x) for x in c.execute('SELECT id,name,username,admin,blocked,substr(avatar_key,9,64) AS avatar_version FROM users ORDER BY name')], 'projects':projects,'tasks':tasks,'stats_timezone':str(STATS_ZONE),'base_type':base}
 
 def api_get():
     path=request.path
@@ -684,7 +720,7 @@ def post_workspace(c,u,path,b):
                 c.execute("UPDATE app_meta SET value=? WHERE key='workspace_name'",(name.strip(),))
             elif path=='/api/workspace/block':
                 if not u['admin']: raise PermissionError('Solo un administrador del workspace puede bloquear usuarios')
-                target=int(b['user_id']); blocked=b.get('blocked')
+                target=integer_field(b['user_id']); blocked=b.get('blocked')
                 if type(blocked) is not bool: raise ValueError('Estado de bloqueo inválido')
                 if target==u['id']: raise ValueError('No puedes bloquear tu propia cuenta')
                 if not c.execute('SELECT 1 FROM users WHERE id=?',(target,)).fetchone(): raise ValueError('Usuario no encontrado')
@@ -711,23 +747,26 @@ def post_workspace(c,u,path,b):
                     return session_response(token)
             elif path=='/api/users':
                 if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear usuarios')
-                name=b.get('name','').strip(); username=b.get('username','').strip().lower(); pw=b.get('password','')
+                name=text_field(b,'name').strip(); username=text_field(b,'username').strip().lower(); pw=text_field(b,'password')
                 if not name or not username or len(pw)<8: raise ValueError('Completa los campos; la contraseña debe tener al menos 8 caracteres')
                 s=secrets.token_hex(16); c.execute('INSERT INTO users(name,username,password,salt,admin,must_change_password) VALUES(?,?,?,?,?,1)',(name,username,hashpw(pw,s),s,int(bool(b.get('admin')))))
 
 def post_projects(c,u,path,b):
             if path=='/api/projects':
                 if not u['admin']: raise PermissionError('Solo el administrador del workspace puede crear proyectos')
-                name=b.get('name','').strip()
+                name=text_field(b,'name').strip()
                 if not name: raise ValueError('El nombre es obligatorio')
+                color=b.get('color','#7765d7'); description=b.get('description','')
+                if not isinstance(color,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',color): raise ValueError('Color inválido')
+                if not isinstance(description,str): raise ValueError('La descripción debe ser texto')
                 public_id=str(uuid.uuid4())
-                p=c.execute('INSERT INTO projects(name,color,description,public_id) VALUES(?,?,?,?)',(name,b.get('color','#7765d7'),b.get('description',''),public_id)).lastrowid
+                p=c.execute('INSERT INTO projects(name,color,description,public_id) VALUES(?,?,?,?)',(name,color,description,public_id)).lastrowid
                 c.execute('INSERT INTO members VALUES(?,?,?)',(p,u['id'],'admin'))
                 ensure_base_type(c,p)
                 for i,n in enumerate(['Por hacer','En progreso','En revisión','Completado']): c.execute('INSERT INTO columns(project_id,name,position,color) VALUES(?,?,?,?)',(p,n,i,COLUMN_COLORS[i]))
                 c.commit(); return respond({'id':p,'public_id':public_id})
             elif path=='/api/projects/update':
-                p=int(b['project_id']); project=c.execute('SELECT id,color FROM projects WHERE id=?',(p,)).fetchone()
+                p=integer_field(b['project_id']); project=c.execute('SELECT id,color FROM projects WHERE id=?',(p,)).fetchone()
                 if not project: raise ValueError('Proyecto no encontrado')
                 if role(c,u,p)!='admin': raise PermissionError('Solo un administrador del proyecto puede editarlo')
                 name=str(b.get('name','')).strip(); description=str(b.get('description','')).strip()
@@ -737,13 +776,13 @@ def post_projects(c,u,path,b):
                 if 'color' in b and (not isinstance(color,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',color)): raise ValueError('Color inválido')
                 c.execute('UPDATE projects SET name=?,description=?,color=? WHERE id=?',(name,description,color,p))
             elif path=='/api/members':
-                p=int(b['project_id'])
+                p=integer_field(b['project_id'])
                 if role(c,u,p)!='admin': raise PermissionError('No tienes permisos para administrar este proyecto')
-                if b.get('role')=='remove': c.execute('DELETE FROM members WHERE project_id=? AND user_id=?',(p,int(b['user_id'])))
-                elif b.get('role') in ('admin','editor','viewer'): c.execute('INSERT INTO members VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role',(p,int(b['user_id']),b['role']))
+                if b.get('role')=='remove': c.execute('DELETE FROM members WHERE project_id=? AND user_id=?',(p,integer_field(b['user_id'])))
+                elif b.get('role') in ('admin','editor','viewer'): c.execute('INSERT INTO members VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role',(p,integer_field(b['user_id']),b['role']))
                 else: raise ValueError('Rol inválido')
             elif path=='/api/columns':
-                p=int(b['project_id']); name=b.get('name','').strip()
+                p=integer_field(b['project_id']); name=text_field(b,'name').strip()
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
                 if not name: raise ValueError('El nombre es obligatorio')
                 c.execute('''INSERT INTO columns(project_id,name,position,color)
@@ -751,7 +790,7 @@ def post_projects(c,u,path,b):
                              CASE COUNT(*) % 4 WHEN 0 THEN ? WHEN 1 THEN ? WHEN 2 THEN ? ELSE ? END
                              FROM columns WHERE project_id=?''',(p,name,*COLUMN_COLORS,p))
             elif path in ('/api/columns/rename','/api/columns/update'):
-                col=int(b['column_id']); name=b.get('name')
+                col=integer_field(b['column_id']); name=b.get('name')
                 column=c.execute('SELECT * FROM columns WHERE id=?',(col,)).fetchone()
                 if not column: raise ValueError('Columna no encontrada')
                 if role(c,u,column['project_id'])!='admin': raise PermissionError('Solo un administrador del proyecto puede editar la columna')
@@ -761,7 +800,7 @@ def post_projects(c,u,path,b):
                 if not isinstance(color,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',color): raise ValueError('Color inválido')
                 c.execute('UPDATE columns SET name=?,color=? WHERE id=?',(name,color,col))
             elif path=='/api/columns/delete':
-                col=int(b['column_id']);column=c.execute('SELECT * FROM columns WHERE id=?',(col,)).fetchone()
+                col=integer_field(b['column_id']);column=c.execute('SELECT * FROM columns WHERE id=?',(col,)).fetchone()
                 if not column: raise ValueError('Columna no encontrada')
                 project=column['project_id']
                 if role(c,u,project)!='admin': raise PermissionError('Solo un administrador del proyecto puede eliminar la columna')
@@ -791,7 +830,7 @@ def post_projects(c,u,path,b):
                 if action=='move':
                     for tid in tasks: automate(c,tid,[('column',col,dest)],u['id'],project)
             elif path=='/api/columns/reorder':
-                p=int(b['project_id']); order=b.get('order')
+                p=integer_field(b['project_id']); order=b.get('order')
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
                 if not isinstance(order,list) or any(type(x) is not int for x in order): raise ValueError('Orden inválido')
                 current={row['id'] for row in c.execute('SELECT id FROM columns WHERE project_id=?',(p,))}
@@ -804,21 +843,18 @@ def post_task_types(c,u,path,b):
                 if parent:
                     parent=int(parent)
                     if not can_task(c,u,parent,True): raise PermissionError('Sin permiso para editar la tarea principal')
-                p=int(b['project_id']) if b.get('project_id') else None
+                p=integer_field(b['project_id']) if b.get('project_id') else None
                 if p:
-                    col=int(b['column_id'])
+                    col=integer_field(b['column_id'])
                     if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
                     if not c.execute('SELECT 1 FROM columns WHERE id=? AND project_id=?',(col,p)).fetchone(): raise ValueError('Columna inválida')
                 elif not parent and not u['admin']:
                     raise PermissionError('Solo un administrador puede crear tareas sin proyecto')
-                assignee=int(b['assignee_id']) if b.get('assignee_id') else None
+                assignee=integer_field(b['assignee_id']) if b.get('assignee_id') else None
                 if assignee is not None and not c.execute('SELECT 1 FROM users WHERE id=?',(assignee,)).fetchone():
                     raise ValueError('Responsable inválido')
-                due_date=str(b['due_date']) if b.get('due_date') else None
-                if due_date:
-                    try: datetime.strptime(due_date,'%Y-%m-%d')
-                    except ValueError: raise ValueError('Fecha límite inválida')
-                type_id=int(b['type_id']) if b.get('type_id') else ensure_base_type(c,p)
+                due_date=task_due_date(b.get('due_date'))
+                type_id=integer_field(b['type_id']) if b.get('type_id') else ensure_base_type(c,p)
                 selected=c.execute('SELECT * FROM task_types WHERE id=?',(type_id,)).fetchone()
                 if not selected or selected['project_id'] != p: raise ValueError('Tipo de tarea inválido para este proyecto')
                 tid=c.execute('INSERT INTO tasks(title,created_at,parent_id,type_id,status_id,public_id,assignee_id,due_date) VALUES(?,?,?,?,?,?,?,?)',(title,now(),parent,type_id,default_status(c,type_id),str(uuid.uuid4()),assignee,due_date)).lastrowid
@@ -832,24 +868,24 @@ def post_task_types(c,u,path,b):
                 if p: automate(c,tid,[('created',None,None)]+([('assignee_id',None,assignee)] if assignee else []),u['id'],p)
                 c.commit(); return respond({'id':tid})
             elif path=='/api/task-types':
-                p=int(b['project_id']); name=str(b.get('name','')).strip()
+                p=integer_field(b['project_id']); name=str(b.get('name','')).strip()
                 if role(c,u,p)!='admin': raise PermissionError('Solo un administrador del proyecto puede configurar tipos')
                 if not name or len(name)>100: raise ValueError('El nombre del tipo es obligatorio y debe tener hasta 100 caracteres')
                 type_id=create_type(c,p,name)
                 c.commit(); return respond({'id':type_id})
             elif path=='/api/task-types/delete':
-                type_id=int(b['id']); typ=c.execute('SELECT * FROM task_types WHERE id=?',(type_id,)).fetchone()
+                type_id=integer_field(b['id']); typ=c.execute('SELECT * FROM task_types WHERE id=?',(type_id,)).fetchone()
                 if not typ or typ['project_id'] is None or role(c,u,typ['project_id'])!='admin': raise PermissionError('Sin permiso para configurar este tipo')
                 if typ['is_base']: raise ValueError('No se puede eliminar el tipo base')
                 if c.execute('SELECT 1 FROM tasks WHERE type_id=? LIMIT 1',(type_id,)).fetchone(): raise ValueError('Hay tareas con este tipo. Cámbialas de tipo antes de eliminarlo, incluso si están en otro tablero o sin proyecto')
                 c.execute('DELETE FROM task_types WHERE id=?',(type_id,))
             elif path=='/api/task-types/update':
-                type_id=int(b['id']); typ=c.execute('SELECT * FROM task_types WHERE id=?',(type_id,)).fetchone()
+                type_id=integer_field(b['id']); typ=c.execute('SELECT * FROM task_types WHERE id=?',(type_id,)).fetchone()
                 if not typ or typ['project_id'] is None or role(c,u,typ['project_id'])!='admin': raise PermissionError('Sin permiso para configurar este tipo')
                 name=str(b.get('name','')).strip(); statuses=b.get('statuses')
-                if not name or len(name)>100 or not isinstance(statuses,list): raise ValueError('Datos del tipo inválidos')
+                if not name or len(name)>100 or not isinstance(statuses,list) or any(not isinstance(st,dict) for st in statuses): raise ValueError('Datos del tipo inválidos')
                 existing={r['id']:r for r in c.execute('SELECT * FROM task_statuses WHERE type_id=?',(type_id,))}
-                provided=[int(x['id']) for x in statuses if x.get('id')]
+                provided=[integer_field(x['id']) for x in statuses if x.get('id')]
                 deleted=b.get('deleted_status_ids',[])
                 if not isinstance(deleted,list) or any(type(x) is not int for x in deleted): raise ValueError('Lista de estados inválida')
                 if len(provided)!=len(set(provided)) or len(deleted)!=len(set(deleted)) or set(provided)&set(deleted) or set(provided)|set(deleted)!=set(existing): raise ValueError('Los estados cambiaron; vuelve a cargar')
@@ -864,15 +900,15 @@ def post_task_types(c,u,path,b):
                     label=str(st.get('name','')).strip(); color=str(st.get('color',''))
                     if not label or len(label)>100 or not re.fullmatch(r'#[0-9a-fA-F]{6}',color): raise ValueError('Nombre o color del estado inválido')
                     if st.get('id'):
-                        if typ['is_base'] and bool(st.get('is_done'))!=bool(existing[int(st['id'])]['is_done']): raise ValueError('No se puede cambiar la categoría de un estado base')
-                        changed_category=bool(st.get('is_done'))!=bool(existing[int(st['id'])]['is_done'])
-                        c.execute('UPDATE task_statuses SET name=?,color=?,is_done=?,position=? WHERE id=? AND type_id=?',(label,color,int(bool(st.get('is_done'))),i,int(st['id']),type_id))
+                        if typ['is_base'] and bool(st.get('is_done'))!=bool(existing[integer_field(st['id'])]['is_done']): raise ValueError('No se puede cambiar la categoría de un estado base')
+                        changed_category=bool(st.get('is_done'))!=bool(existing[integer_field(st['id'])]['is_done'])
+                        c.execute('UPDATE task_statuses SET name=?,color=?,is_done=?,position=? WHERE id=? AND type_id=?',(label,color,int(bool(st.get('is_done'))),i,integer_field(st['id']),type_id))
                         if changed_category:
-                            for task in c.execute('SELECT id FROM tasks WHERE status_id=?',(int(st['id']),)).fetchall(): metric_event(c,task['id'],'completed' if st.get('is_done') else 'reopened',u['id'])
+                            for task in c.execute('SELECT id FROM tasks WHERE status_id=?',(integer_field(st['id']),)).fetchall(): metric_event(c,task['id'],'completed' if st.get('is_done') else 'reopened',u['id'])
                     else: c.execute('INSERT INTO task_statuses(type_id,name,color,is_done,position) VALUES(?,?,?,?,?)',(type_id,label,color,int(bool(st.get('is_done'))),i))
                 c.execute('UPDATE task_types SET name=? WHERE id=?',(name,type_id))
             elif path=='/api/task/type-status':
-                tid=int(b['id']); type_id=int(b['type_id']); status_id=int(b['status_id']) if b.get('status_id') else None
+                tid=integer_field(b['id']); type_id=integer_field(b['type_id']); status_id=integer_field(b['status_id']) if b.get('status_id') else None
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
                 task=c.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
                 typ=c.execute('SELECT * FROM task_types WHERE id=?',(type_id,)).fetchone()
@@ -897,7 +933,7 @@ def post_task_types(c,u,path,b):
 
 def post_tasks(c,u,path,b):
             if path=='/api/comments':
-                tid=int(b['task_id']); body=str(b.get('body','')).strip()
+                tid=integer_field(b['task_id']); body=str(b.get('body','')).strip()
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para comentar')
                 if not body: raise ValueError('Escribe un comentario')
                 if len(body)>10000: raise ValueError('El comentario es demasiado largo')
@@ -905,7 +941,7 @@ def post_tasks(c,u,path,b):
                 import slack_notify
                 slack_notify.enqueue(c,'comment',tid,u['id'])
             elif path=='/api/comments/update':
-                comment=c.execute('SELECT id,task_id,user_id,body FROM comments WHERE id=?',(int(b['id']),)).fetchone()
+                comment=c.execute('SELECT id,task_id,user_id,body FROM comments WHERE id=?',(integer_field(b['id']),)).fetchone()
                 if not comment: return respond({'error':'Comentario no encontrado'},404)
                 if comment['user_id']!=u['id'] or not can_task(c,u,comment['task_id'],True):
                     raise PermissionError('Sin permiso para editar este comentario')
@@ -918,7 +954,7 @@ def post_tasks(c,u,path,b):
                     record(c,comment['task_id'],u['id'],'editó un comentario')
                 return respond({'ok':True,'body':body})
             elif path=='/api/task/delete':
-                tid=int(b['id'])
+                tid=integer_field(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para eliminar la tarea')
                 delete_task(c,tid,u['id'])
             elif path=='/api/task/update':
@@ -928,7 +964,7 @@ def post_tasks(c,u,path,b):
                     if type(b['expected_user_id']) is not int or not current or current['id']!=b['expected_user_id'] or flags['blocked'] or flags['must_change_password']:
                         raise PermissionError('La sesión cambió; conserva tu borrador')
                     u=current
-                tid=int(b['id'])
+                tid=integer_field(b['id'])
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
                 old=c.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
                 if not old: raise ValueError('Tarea no encontrada')
@@ -942,7 +978,11 @@ def post_tasks(c,u,path,b):
                 for key,label in labels.items():
                     if key in b:
                         val=task_title(b[key]) if key=='title' else (b[key] or None if key in ('assignee_id','due_date') else str(b[key]).strip())
+                        if key=='due_date': val=task_due_date(b[key])
+                        if key=='priority': val=task_priority(b[key])
+                        if key=='assignee_id' and val is not None: val=integer_field(val)
                         if key=='description':
+                            if not isinstance(b[key],str): raise ValueError('La descripción debe ser texto')
                             fmt='html' if b.get('description_format')=='html' else 'plain'
                             if fmt=='html': val=sanitize_description(val)
                             if old['description_format']!=fmt and str(old[key] or '')==str(val or ''):
@@ -957,7 +997,8 @@ def post_tasks(c,u,path,b):
                 task=c.execute('SELECT title,description,description_format,title_version,description_version FROM tasks WHERE id=?',(tid,)).fetchone()
                 return respond({'ok':True,**dict(task)})
             elif path=='/api/task/move':
-                tid=int(b['id']); p=int(b['project_id']); col=int(b['column_id']); order=b['order']
+                tid=integer_field(b['id']); p=integer_field(b['project_id']); col=integer_field(b['column_id']); order=b['order']
+                if not isinstance(order,list) or any(type(value) is not int for value in order): raise ValueError('Orden inválido')
                 if role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
                 if not can_task(c,u,tid,True): raise PermissionError('Sin permiso para editar')
                 if not c.execute('SELECT 1 FROM columns WHERE id=? AND project_id=?',(col,p)).fetchone(): raise ValueError('Columna inválida')
@@ -970,7 +1011,7 @@ def post_tasks(c,u,path,b):
                 name=c.execute('SELECT name FROM columns WHERE id=?',(col,)).fetchone()['name']; record(c,tid,u['id'],('movió a '+name) if old['column_id']!=col else 'cambió el orden en '+name)
                 if old['column_id']!=col: automate(c,tid,[('column',old['column_id'],col)],u['id'],p)
             elif path=='/api/task/project':
-                tid=int(b['id']); p=int(b['project_id'])
+                tid=integer_field(b['id']); p=integer_field(b['project_id'])
                 if not can_task(c,u,tid,True) or role(c,u,p) not in ('admin','editor'): raise PermissionError('Sin permiso para editar')
                 if b.get('remove'):
                     if not c.execute('SELECT 1 FROM placements WHERE task_id=? AND project_id=?',(tid,p)).fetchone(): raise ValueError('La tarea no pertenece a este proyecto')
