@@ -69,7 +69,7 @@ class DeploymentConfigTest(unittest.TestCase):
                                 raise subprocess.CalledProcessError(1, command)
                         with patch.object(deploy, 'as_user', side_effect=check), self.assertRaisesRegex(ValueError, re.escape(name)):
                             deploy.prepare_venv('ubuntu', root / 'tasks.db', 'UTC')
-                for name in ('navigation.js','slack.js','project-filters.js','attachments.js','task-detail.js'):
+                for name in ('navigation.js','slack.js','project-filters.js','attachments.js','task-detail.js','favicon.png','slack-logo.png'):
                     path=root / 'static' / name
                     def check(user, *command):
                         if command == ('test', '-r', path):

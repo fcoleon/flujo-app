@@ -206,7 +206,7 @@ def index(public_id=None,board_id=None):
                            navigation_version=asset_version('navigation.js'),slack_version=asset_version('slack.js'),
                            project_filters_version=asset_version('project-filters.js'),attachments_version=asset_version('attachments.js'),
                            task_detail_version=asset_version('task-detail.js'),
-                           favicon_version=asset_version('favicon.svg')))
+                           favicon_version=asset_version('favicon.png')))
     response.cache_control.no_cache=True
     return response
 
@@ -227,8 +227,8 @@ def versioned_asset(filename):
     response.cache_control.no_cache=True
     return response
 
-@app.get('/static/<any(app.js,automations.js,navigation.js,slack.js,"project-filters.js",attachments.js,"task-detail.js",style.css,favicon.svg):filename>')
-@app.get('/<any(app.js,style.css,favicon.svg):filename>')
+@app.get('/static/<any(app.js,automations.js,navigation.js,slack.js,"project-filters.js",attachments.js,"task-detail.js",style.css,favicon.svg,favicon.png,"slack-logo.png"):filename>')
+@app.get('/<any(app.js,style.css,favicon.svg,favicon.png):filename>')
 def static_asset(filename):
     response=send_from_directory(STATIC_DIR,filename)
     response.cache_control.no_cache=True
