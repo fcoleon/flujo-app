@@ -76,6 +76,12 @@ class DeploymentConfigTest(unittest.TestCase):
                             raise subprocess.CalledProcessError(1, command)
                     with self.subTest(name=name), patch.object(deploy, 'as_user', side_effect=check), self.assertRaisesRegex(ValueError, re.escape(name)):
                         deploy.prepare_venv('ubuntu', root / 'tasks.db', 'UTC')
+                python = root / '.venv' / 'bin' / 'python'
+                python.parent.mkdir(parents=True)
+                python.touch()
+                with patch.object(deploy, 'as_user') as run, patch.object(deploy, 'check_writable'):
+                    deploy.prepare_venv('ubuntu', root / 'tasks.db', 'UTC')
+                run.assert_any_call('ubuntu', python, '-m', 'pip', 'install', '--quiet', '-r', root / 'requirements.txt')
 
     def test_slack_supervisor_migration_is_idempotent_and_rejects_conflicts(self):
         with tempfile.TemporaryDirectory() as tmp:

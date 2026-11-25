@@ -305,7 +305,7 @@ def prepare_venv(user, db_path, timezone, create=True):
     if db_path.exists():
         check_writable(user, db_path, 'la base de datos SQLite')
         as_user(user, 'test', '-r', db_path)
-    as_user(user, python, '-m', 'pip', 'install', '-r', APP_DIR / 'requirements.txt')
+    as_user(user, python, '-m', 'pip', 'install', '--quiet', '-r', APP_DIR / 'requirements.txt')
 
 
 def installed_supervisor_settings():
