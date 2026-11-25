@@ -1,5 +1,5 @@
 // Run with: node tests/test_attachments.js
-const source=require('fs').readFileSync('static/app.js','utf8');
+const source=require('fs').readFileSync('static/attachments.js','utf8');
 const assert=(value,message)=>{if(!value)throw Error(message)};
 eval(source.slice(source.indexOf('function attachmentType('),source.indexOf('function renderAttachments('))+`
   assert(attachmentType('documento.docx')==='Documento Word','documento Word');

@@ -53,6 +53,18 @@ class AutomationsIntegrationTest(unittest.TestCase):
     def runs(self, project=1, user=1):
         return self.request('GET', f'automations/runs?project_id={project}', user=user).get_json()['runs']
 
+    def test_save_rollback(self):
+        payload=dict(project_id=1,name='Regla',enabled=True,trigger={'type':'created'},
+                     conditions=[],actions=[{'type':'priority','value':'Alta'}])
+        original=app.respond
+        def respond(data,*args):
+            if 'rule' in data: raise ValueError('Error al preparar respuesta')
+            return original(data,*args)
+        with patch('automation_routes.respond',side_effect=respond):
+            self.post('automations/save',payload,status=400)
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM automation_rules').fetchone()[0],0)
+
     def test_crud_validation_and_permissions(self):
         payload = dict(project_id=1, name='  Regla  ', enabled=True, trigger={'type': 'created'},
                        conditions=[], actions=[{'type': 'priority', 'value': 'Alta'}])
@@ -86,7 +98,7 @@ class AutomationsIntegrationTest(unittest.TestCase):
                       [{'type': 'status', 'value': self.done}])
         d = self.rule('Ciclo', {'type': 'status', 'to': self.done},
                       [{'type': 'priority', 'value': 'Normal'}])
-        with patch('app.now', return_value='2026-11-03T12:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-03T12:00:00+00:00'), patch('task_routes.now',return_value='2026-11-03T12:00:00+00:00'):
             tid = self.task(project_id=1, column_id=1)
         runs = self.runs(user=2)
         self.assertEqual([r['rule_id'] for r in reversed(runs)], [a['id'], b['id'], d['id']])
@@ -226,7 +238,7 @@ class AutomationsIntegrationTest(unittest.TestCase):
                   [{'field': 'due_date', 'op': 'today'}, {'field': 'due_date', 'op': 'has'}])
         self.rule('Vacía', {'type': 'due_date', 'to': 'none'}, [{'type': 'assignee_id', 'value': 2}],
                   [{'field': 'due_date', 'op': 'empty'}])
-        with patch('app.now', return_value='2026-11-11T10:00:00+00:00'):
+        with patch('task_domain.now',return_value='2026-11-11T10:00:00+00:00'), patch('task_routes.now',return_value='2026-11-11T10:00:00+00:00'):
             tid = self.task(project_id=1, column_id=1)
             self.post('task/update', {'id': tid, 'due_date': '2026-11-11'})
         with app.db() as c:

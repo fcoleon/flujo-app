@@ -1,5 +1,5 @@
 // Run with: node tests/test_description_autosave.js
-const source=require('fs').readFileSync('static/app.js','utf8');
+const source=require('fs').readFileSync('static/task-detail.js','utf8');
 const assert=(value,message)=>{if(!value)throw Error(message)};
 let taskDraft=null,timers=[],calls=[],data={user:{id:1}};
 const pendingTaskDrafts=new Map();

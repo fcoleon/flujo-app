@@ -4,7 +4,7 @@ Aplicación interna de gestión de tareas con tableros Kanban, un único workspa
 
 ## Requisitos e inicio
 
-Se requiere Python 3.9 o superior y una base de datos de zonas horarias del sistema. Desde la raíz del proyecto:
+Se requiere Python 3.13 o superior y una base de datos de zonas horarias del sistema. Desde la raíz del proyecto:
 
 ```sh
 python3 -m venv .venv
@@ -37,8 +37,10 @@ El despliegue con Supervisor usa exclusivamente el `config.ini` de la aplicació
 Para ejecutar las pruebas automatizadas:
 
 ```sh
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python tests/run_all.py
 ```
+
+El comando ejecuta las pruebas Python y JavaScript; requiere Node.js para estas últimas. Para ejecutar solo Python: `.venv/bin/python -m unittest discover -s tests -v`.
 
 Las peticiones POST a la API usan `Content-Type: application/json` y un objeto JSON como cuerpo; para operaciones sin campos se envía `{}`. Un tipo de contenido incorrecto devuelve `415` y JSON inválido o una raíz que no sea un objeto devuelve `400`, con un mensaje en `error`. Al agregar o modificar operaciones, valida los tipos y valores de sus campos antes de usarlos y conserva el mismo formato de error; los campos desconocidos se ignoran.
 

@@ -1,5 +1,6 @@
 // Run with: node tests/test_background_sync.js
 const source=require('fs').readFileSync('static/app.js','utf8');
+const detail=require('fs').readFileSync('static/task-detail.js','utf8');
 const assert=(value,message)=>{if(!value)throw Error(message)};
 let taskDraft=null,requests=[],timers=[];
 const pendingTaskDrafts=new Map(),document={activeElement:null},$=()=>null;
@@ -8,7 +9,7 @@ const setTimeout=(fn,delay)=>{let timer={fn,delay};timers.push(timer);return tim
 const refresh=()=>Promise.resolve(),updateActivity=()=>Promise.resolve(),toast=()=>{},showTaskConflict=()=>{};
 function setTaskSaveStatus(draft,message){draft.status.textContent=message}
 function api(path,payload,background){return new Promise((resolve,reject)=>requests.push({payload,background,resolve,reject}))}
-eval(source.slice(source.indexOf('function updateSyncIndicator('),source.indexOf('function showPendingTaskDrafts('))+'\n'+source.slice(source.indexOf('async function flushTaskDraft('),source.indexOf('function showTaskConflict('))+`
+eval(source.slice(source.indexOf('function updateSyncIndicator('),source.indexOf('function showPendingTaskDrafts('))+'\n'+detail.slice(detail.indexOf('async function flushTaskDraft('),detail.indexOf('function showTaskConflict('))+`
   async function run(){
     let draft={id:1,ownerId:1,title:{value:'Tarea'},editor:{innerHTML:'Nuevo'},status:{},savedTitle:'Tarea',savedDescription:'Anterior',titleVersion:0,descriptionVersion:0};
     taskDraft=draft;queueTaskDraft(draft);taskDraft=null;

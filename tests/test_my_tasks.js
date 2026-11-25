@@ -1,5 +1,6 @@
 // Run with: node tests/test_my_tasks.js
 const source=require('fs').readFileSync('static/app.js','utf8');
+const navigation=require('fs').readFileSync('static/navigation.js','utf8');
 let data={user:{id:1},projects:[{id:10,name:'A'},{id:20,name:'B'}],tasks:[
   {id:1,title:'Compartida',assignee_id:1,due_date:'2026-01-03',priority:'Normal',can_edit:true,has_projects:true,placements:[{project_id:10},{project_id:20}],inherited_project_ids:[],done:false},
   {id:2,title:'Subtarea',assignee_id:1,due_date:'2026-01-01',priority:'Alta',can_edit:false,has_projects:true,placements:[],inherited_project_ids:[10],parent_id:1,done:false},
@@ -7,16 +8,16 @@ let data={user:{id:1},projects:[{id:10,name:'A'},{id:20,name:'B'}],tasks:[
   {id:4,title:'Finalizada',assignee_id:1,due_date:'2026-01-02',priority:'Alta',can_edit:true,has_projects:true,placements:[{project_id:20}],done:true},
   {id:5,title:'De otra persona',assignee_id:2,can_edit:true,has_projects:false,placements:[],done:false}
 ]};
-let results={innerHTML:''},count={textContent:''},breadcrumb={textContent:''},header={querySelector:()=>breadcrumb},removed=false;
-let main={classList:{add(){}},lastElementChild:{remove(){removed=true;main.lastElementChild=header}},querySelector:s=>s==='.topbar'?header:{insertBefore(){}},insertAdjacentHTML(position,html){this.content=html}};
+let results={innerHTML:''},count={textContent:''},header={};
+let main={classList:{add(){}},lastElementChild:header,querySelector:()=>({insertBefore(){}}),insertAdjacentHTML(position,html){this.content=html}};
 const document={createElement:()=>({setAttribute(){},appendChild(){}})};
 const $=s=>s==='#myTaskResults'?results:s==='#myTaskCount'?count:s==='#app main'?main:null;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function taskStatus(t){return {is_done:t.done}} function matchesSearch(t,q){return t.title.toLowerCase().includes(q.toLowerCase())}
 function taskQuickControls(t,editable){return {statusControl:editable?'EDITAR':'LECTURA',dateControl:'FECHA',priorityControl:'PRIORIDAD'}}
 const assert=(value,message)=>{if(!value)throw Error(message)};
-eval(source.slice(source.indexOf('function taskContextProjects('),source.indexOf('function taskPath('))+
-     source.slice(source.indexOf("let mineBoard='all'"),source.indexOf('const renderBoardWithoutAutomations='))+`
+eval(navigation.slice(navigation.indexOf('function taskContextProjects('),navigation.indexOf('function taskPath('))+
+     source.slice(source.indexOf("let mineBoard='all'"),source.indexOf('function render(){\n  closeProjectFilters();renderShell();'))+`
   assert(myTasks().map(t=>t.id).join(',')==='2,1,3','solo asignadas y en curso, ordenadas por fecha');
   mineBoard='20';assert(myTasks().map(t=>t.id).join(',')==='1','tarea compartida aparece una sola vez');
   mineBoard='10';assert(myTasks().map(t=>t.id).join(',')==='2,1','incluye subtareas heredadas');
@@ -31,5 +32,5 @@ eval(source.slice(source.indexOf('function taskContextProjects('),source.indexOf
   assert(groups.map(g=>g.tasks.map(t=>t.id).join(',')).join('|')==='1|2,3|4|5|6','límites de fechas en año bisiesto');
   data.stats_timezone='America/Santiago';assert(myTasksToday(new Date('2026-01-01T02:00:00Z'))==='2025-12-31','usa zona horaria configurada');
   mineSearch='';mineGroup='due';renderMyTaskResults();assert(results.innerHTML.includes('my-tasks-group')&&results.innerHTML.includes('Finalizadas'),'muestra grupos');
-  renderMyTasks();assert(removed&&main.lastElementChild===header&&breadcrumb.textContent==='Mis tareas'&&main.content.includes('my-tasks-filters'),'conserva la cabecera y sus controles móviles');
+  renderMyTasks();assert(main.lastElementChild===header&&main.content.includes('my-tasks-filters'),'conserva la cabecera y sus controles móviles');
 `);

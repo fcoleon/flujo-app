@@ -2,7 +2,7 @@
 
 Flujo usa Flask en desarrollo y Gunicorn detrás de Nginx en producción. Supervisor mantiene Gunicorn en ejecución; la comunicación con Nginx usa un socket Unix, sin reservar un puerto TCP para la aplicación. Nginx entrega CSS, JavaScript y favicon directamente desde la carpeta `static/` del proyecto; Flask entrega el HTML y la API.
 
-La aplicación debe estar en su ruta definitiva. Se requiere Python 3.9 o superior, `python3-venv`, `tzdata`, Nginx, Supervisor, `systemd-tmpfiles` e `iproute2`. Nginx y Supervisor deben estar en ejecución. El usuario de la aplicación necesita acceso de lectura al proyecto y de escritura a la base de datos y su directorio.
+La aplicación debe estar en su ruta definitiva. Se requiere Python 3.13 o superior, `python3-venv`, `tzdata`, Nginx, Supervisor, `systemd-tmpfiles` e `iproute2`. Nginx y Supervisor deben estar en ejecución. El usuario de la aplicación necesita acceso de lectura al proyecto y de escritura a la base de datos y su directorio.
 
 ## Configuración
 

@@ -273,10 +273,10 @@ def installed_socket_group(user, socket_path=None, requested_group=None):
 
 
 def prepare_venv(user, db_path, timezone, create=True):
-    modules = [APP_DIR / name for name in ('app.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py', 'slack_notify.py', 'slack_auth.py', 'automations.py', 'mcp_server.py')]
+    modules = [APP_DIR / name for name in ('app.py', 'api_router.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py', 'validation.py', 'permissions.py', 'task_domain.py', 'web_helpers.py', 'mcp_tokens.py', 'slack_notify.py', 'slack_auth.py', 'automations.py', 'automation_routes.py', 'workspace_routes.py', 'project_routes.py', 'comment_routes.py', 'task_routes.py', 'mcp_server.py')]
     if not all(path.is_file() for path in (*modules, APP_DIR / 'templates' / 'index.html')):
         fail(f'No se encontró la aplicación completa en {APP_DIR}. Copia sus archivos antes de continuar.')
-    for path in (APP_DIR, *modules, APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'style.css', 'favicon.svg'))):
+    for path in (APP_DIR, *modules, APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'automations.js', 'navigation.js', 'slack.js', 'project-filters.js', 'attachments.js', 'task-detail.js', 'style.css', 'favicon.svg'))):
         try:
             as_user(user, 'test', '-x' if path.is_dir() else '-r', path)
         except subprocess.CalledProcessError:
@@ -294,10 +294,10 @@ def prepare_venv(user, db_path, timezone, create=True):
     # También detecta un .venv copiado de otro sistema o una zona horaria inexistente.
     try:
         as_user(user, python, '-c', 'import sys; from zoneinfo import ZoneInfo; '
-                'assert sys.version_info >= (3, 9), "Se requiere Python 3.9 o superior"; '
+                'assert sys.version_info >= (3, 13), "Se requiere Python 3.13 o superior"; '
                 'ZoneInfo(sys.argv[1])', timezone)
     except (subprocess.CalledProcessError, OSError):
-        fail('El Python de .venv no funciona, es anterior a 3.9 o no reconoce la zona horaria. '
+        fail('El Python de .venv no funciona, es anterior a 3.13 o no reconoce la zona horaria. '
              'Revisa python3-venv y tzdata; recrea .venv en Ubuntu si fue copiado.')
     if not db_path.parent.is_dir():
         fail(f'No existe el directorio de la base de datos: {db_path.parent}')

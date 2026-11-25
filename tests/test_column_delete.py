@@ -93,7 +93,7 @@ class ColumnDeleteTest(unittest.TestCase):
             calls+=1
             if calls==2: raise sqlite3.IntegrityError('Fallo de prueba')
             return original(c,tid,uid,message)
-        with patch.object(app,'record',side_effect=fail):
+        with patch('project_routes.record',side_effect=fail):
             self.post('columns/delete',{'column_id':1,'task_ids':[first,second],'action':'move','destination_id':2},status=400)
         with app.db() as c:
             self.assertEqual([r['column_id'] for r in c.execute('SELECT column_id FROM placements WHERE task_id IN (?,?) ORDER BY task_id',(first,second))],[1,1])
