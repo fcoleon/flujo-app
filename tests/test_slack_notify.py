@@ -23,7 +23,7 @@ class SlackNotifyTest(unittest.TestCase):
         slack.init(self.c)
         slack.init(self.c)
         self.c.execute("INSERT INTO users(id,name,username,password,salt) VALUES(1,'Actor','actor','',''),(2,'Ana','ana','',''),(3,'Bea','bea','','')")
-        self.c.execute("INSERT INTO projects(id,name) VALUES(1,'Proyecto')")
+        self.c.execute("INSERT INTO projects(id,name,public_id) VALUES(1,'Proyecto','11111111-1111-4111-8111-111111111111')")
         self.c.execute("INSERT INTO members VALUES(1,1,'editor'),(1,2,'viewer'),(1,3,'viewer')")
         self.c.execute("INSERT INTO columns(id,project_id,name,position) VALUES(1,1,'Columna',0)")
         status = self.c.execute('SELECT id,type_id FROM task_statuses WHERE is_done=0 LIMIT 1').fetchone()
@@ -204,7 +204,7 @@ class SlackNotifyTest(unittest.TestCase):
             slack.run_once()
             slack.run_once()
             self.assertEqual(send.call_count, 1)
-            self.assertIn('/t/task-uuid', send.call_args.args[2])
+            self.assertIn('/t/task-uuid', send.call_args.args[2]['text'])
         self.assertEqual(self.c.execute("SELECT COUNT(*) FROM slack_queue WHERE kind='digest'").fetchone()[0], 1)
 
     def test_digest_priority_breaks_equal_date_ties(self):
@@ -227,7 +227,10 @@ class SlackNotifyTest(unittest.TestCase):
             self.c.execute("UPDATE tasks SET title='Normal',due_date=NULL WHERE id=1")
             for ident, title, due, priority in [(2, 'Alta', None, 'Alta'), (3, 'Hoy', '2026-01-04', 'Normal'),
                                                  (4, 'Vencida', '2026-01-03', 'Normal'), (5, 'Otra', None, 'Normal'),
-                                                 (6, 'Otra más', None, 'Normal')]:
+                                                 (6, 'Otra más', None, 'Normal'), (7, 'Siete', None, 'Normal'),
+                                                 (8, 'Ocho', None, 'Normal'), (9, 'Nueve', None, 'Normal'),
+                                                 (10, 'Diez', None, 'Normal'), (11, 'Once', None, 'Normal'),
+                                                 (12, 'Doce', None, 'Normal')]:
                 self.c.execute('''INSERT INTO tasks(id,title,assignee_id,created_at,status_id,type_id,public_id,due_date,priority)
                     SELECT ?,?,2,created_at,status_id,type_id,?, ?,? FROM tasks WHERE id=1''',
                     (ident, title, 'uuid-'+str(ident), due, priority))
@@ -239,13 +242,20 @@ class SlackNotifyTest(unittest.TestCase):
             with self.c:
                 self.c.execute("UPDATE slack_digest_settings SET weekdays='[6]' WHERE user_id=2")
             slack.run_once()
-            text = send.call_args.args[2]
+            message = send.call_args.args[2]
+            text = '\n'.join(block.get('text', {}).get('text', '') if block['type'] == 'section'
+                             else block['elements'][0]['text'] for block in message['blocks'])
             self.assertLess(text.index('Vencida'), text.index('Hoy'))
             self.assertLess(text.index('Hoy'), text.index('Alta'))
             self.assertIn('Visible &lt;seguro&gt;', text)
             self.assertNotIn('Secreto', text)
             self.assertIn('America/New_York', text)
-            self.assertIn('Restantes: 1', text)
+            self.assertIn('/board/', text)
+            self.assertIn('Ver mis tareas', text)
+            self.assertIn('📋', text)
+            self.assertIn('Y 2 tareas más', text)
+            self.assertEqual(sum(block['type'] == 'section' and '/t/' in block.get('text', {}).get('text', '')
+                                 for block in message['blocks']), 10)
             self.assertIn('https://example.com/my-tasks', text)
             self.assertIn('Fecha límite: 2026-01-03', text)
             self.assertIn('Prioridad alta', text)
@@ -259,9 +269,9 @@ class SlackNotifyTest(unittest.TestCase):
         with patch.object(slack, '_send', return_value=('sent', 0, None)) as send:
             slack.run_once()
             self.assertEqual(send.call_args.args[1], 'U2')
-            self.assertIn('Prueba del resumen diario', send.call_args.args[2])
-            self.assertIn('No tienes tareas pendientes', send.call_args.args[2])
-            self.assertNotIn('task-uuid', send.call_args.args[2])
+            self.assertIn('Prueba del resumen diario', send.call_args.args[2]['text'])
+            self.assertIn('No tienes tareas pendientes', send.call_args.args[2]['text'])
+            self.assertNotIn('task-uuid', send.call_args.args[2]['text'])
         with self.c:
             self.c.execute("""INSERT INTO slack_queue(installation_id,user_id,team_id,slack_user_id,kind,available_at,created_at,updated_at)
                               VALUES(1,2,'T','U2','digest_test',?,?,?)""", (stamp, stamp, stamp))

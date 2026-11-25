@@ -188,17 +188,33 @@ def _message(c, row):
         tasks = _digest_tasks(c, account, local.date().isoformat())
         if not tasks and row['kind'] == 'digest':
             return None
-        lines = []
-        for task in tasks[:5]:
+        heading = ('*Prueba del resumen diario*\n' if row['kind'] == 'digest_test' else '') + \
+            f"📋 *Tus tareas pendientes* · {local.date().isoformat()} ({_escape(str(app.STATS_ZONE))})"
+        blocks = [{'type': 'section', 'text': {'type': 'mrkdwn', 'text': heading}}]
+        for task in tasks[:10]:
             projects = app.task_projects(c, task['id'])
-            names = [r['name'] for r in c.execute('SELECT id,name FROM projects ORDER BY name,id')
-                     if r['id'] in projects and app.role(c, account, r['id'])]
+            boards = [r for r in c.execute('SELECT id,name,public_id FROM projects ORDER BY name,id')
+                      if r['id'] in projects and app.role(c, account, r['id'])]
             due = f" · Fecha límite: {_escape(task['due_date'])}" if task['due_date'] else ''
             priority = ' · Prioridad alta' if task['priority'] == 'Alta' else ''
-            lines.append('• ' + _task_text(task) + ' — ' + (', '.join(_escape(n) for n in names) if names else 'Sin proyecto') + due + priority)
-        text = ('*Prueba del resumen diario*\n' if row['kind'] == 'digest_test' else '') + f"*Tus tareas pendientes* · {local.date().isoformat()} ({_escape(str(app.STATS_ZONE))})\n"
-        text += '\n'.join(lines) if lines else 'No tienes tareas pendientes.'
-        text += f'\nRestantes: {max(0, len(tasks)-5)}\n<{_base_url()}/my-tasks|Ver mis tareas>'
+            blocks.append({'type': 'section', 'text': {'type': 'mrkdwn',
+                'text': f"• {_task_text(task)}{due}{priority}"}})
+            board_links = [f"<{_base_url()}/board/{quote(board['public_id'], safe='')}|{_escape(board['name'])}>"
+                           for board in boards]
+            blocks.append({'type': 'context', 'elements': [{'type': 'mrkdwn',
+                'text': '↳ ' + (' · '.join(board_links) if board_links else 'Sin proyecto')}]})
+        if len(tasks) > 10:
+            blocks.append({'type': 'context', 'elements': [{'type': 'mrkdwn',
+                'text': f"Y {len(tasks)-10} tareas más en <{_base_url()}/my-tasks|Ver mis tareas>."}]})
+        if not tasks:
+            blocks.append({'type': 'section', 'text': {'type': 'mrkdwn', 'text': 'No tienes tareas pendientes.'}})
+        blocks.append({'type': 'section', 'text': {'type': 'mrkdwn',
+            'text': f"👉 <{_base_url()}/my-tasks|Ver mis tareas>"}})
+        text = ('*Prueba del resumen diario*\n' if row['kind'] == 'digest_test' else '') + \
+            f"📋 Tus tareas pendientes · {local.date().isoformat()} ({_escape(str(app.STATS_ZONE))})\n" + \
+            ('\n'.join(_task_text(task) for task in tasks[:10]) if tasks else 'No tienes tareas pendientes.') + \
+            f"\n<{_base_url()}/my-tasks|Ver mis tareas>"
+        text = {'text': text, 'blocks': blocks}
     else:
         task = c.execute('''SELECT t.*,s.is_done FROM tasks t LEFT JOIN task_statuses s ON s.id=t.status_id
             WHERE t.id=?''', (row['task_id'],)).fetchone()
@@ -227,8 +243,10 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def _send(token, channel, text):
+    payload = {'channel': channel, 'unfurl_links': False}
+    payload.update(text if isinstance(text, dict) else {'text': text})
     request = Request('https://slack.com/api/chat.postMessage',
-        data=json.dumps({'channel': channel, 'text': text, 'unfurl_links': False}).encode(),
+        data=json.dumps(payload).encode(),
         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json; charset=utf-8'})
     try:
         with build_opener(_NoRedirect).open(request, timeout=15) as response:
