@@ -197,23 +197,22 @@ def _message(c, row):
                       if r['id'] in projects and app.role(c, account, r['id'])]
             due = f" · Fecha límite: {_escape(task['due_date'])}" if task['due_date'] else ''
             priority = ' · Prioridad alta' if task['priority'] == 'Alta' else ''
-            blocks.append({'type': 'section', 'text': {'type': 'mrkdwn',
-                'text': f"• {_task_text(task)}{due}{priority}"}})
             board_links = [f"<{_base_url()}/board/{quote(board['public_id'], safe='')}|{_escape(board['name'])}>"
                            for board in boards]
-            blocks.append({'type': 'context', 'elements': [{'type': 'mrkdwn',
-                'text': '↳ ' + (' · '.join(board_links) if board_links else 'Sin proyecto')}]})
+            blocks.append({'type': 'section', 'text': {'type': 'mrkdwn',
+                'text': f"• {_task_text(task)}{due}{priority}\n↳ " +
+                        (' · '.join(board_links) if board_links else 'Sin proyecto')}})
         if len(tasks) > 10:
             blocks.append({'type': 'context', 'elements': [{'type': 'mrkdwn',
                 'text': f"Y {len(tasks)-10} tareas más en <{_base_url()}/my-tasks|Ver mis tareas>."}]})
         if not tasks:
             blocks.append({'type': 'section', 'text': {'type': 'mrkdwn', 'text': 'No tienes tareas pendientes.'}})
         blocks.append({'type': 'section', 'text': {'type': 'mrkdwn',
-            'text': f"👉 <{_base_url()}/my-tasks|Ver mis tareas>"}})
+            'text': f"👉 <{_base_url()}/my-tasks|Ver mis tareas> en flujo-app"}})
         text = ('*Prueba del resumen diario*\n' if row['kind'] == 'digest_test' else '') + \
             f"📋 Tus tareas pendientes · {local.date().isoformat()} ({_escape(str(app.STATS_ZONE))})\n" + \
             ('\n'.join(_task_text(task) for task in tasks[:10]) if tasks else 'No tienes tareas pendientes.') + \
-            f"\n<{_base_url()}/my-tasks|Ver mis tareas>"
+            f"\n<{_base_url()}/my-tasks|Ver mis tareas> en flujo-app"
         text = {'text': text, 'blocks': blocks}
     else:
         task = c.execute('''SELECT t.*,s.is_done FROM tasks t LEFT JOIN task_statuses s ON s.id=t.status_id

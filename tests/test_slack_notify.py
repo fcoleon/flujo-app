@@ -252,10 +252,17 @@ class SlackNotifyTest(unittest.TestCase):
             self.assertIn('America/New_York', text)
             self.assertIn('/board/', text)
             self.assertIn('Ver mis tareas', text)
+            self.assertIn('|Ver mis tareas> en flujo-app', text)
+            self.assertIn('|Ver mis tareas> en flujo-app', message['text'])
             self.assertIn('📋', text)
             self.assertIn('Y 2 tareas más', text)
             self.assertEqual(sum(block['type'] == 'section' and '/t/' in block.get('text', {}).get('text', '')
                                  for block in message['blocks']), 10)
+            task_blocks = [block['text']['text'] for block in message['blocks']
+                           if block['type'] == 'section' and '/t/' in block.get('text', {}).get('text', '')]
+            self.assertTrue(all('\n↳ <https://example.com/board/' in block for block in task_blocks))
+            self.assertFalse(any(block['type'] == 'context' and '/board/' in block['elements'][0]['text']
+                                 for block in message['blocks']))
             self.assertIn('https://example.com/my-tasks', text)
             self.assertIn('Fecha límite: 2026-01-03', text)
             self.assertIn('Prioridad alta', text)
