@@ -87,7 +87,8 @@ def render(template, values):
 
 
 def run(command, **kwargs):
-    print('+ ' + ' '.join(map(str, command)), flush=True)
+    if not (command[0] == 'runuser' and command[3:5] == ['--', 'test'] and command[5:6] in (['-r'], ['-x'])):
+        print('+ ' + ' '.join(map(str, command)), flush=True)
     return subprocess.run(command, check=True, **kwargs)
 
 
@@ -276,6 +277,7 @@ def prepare_venv(user, db_path, timezone, create=True):
     modules = [APP_DIR / name for name in ('app.py', 'api_router.py', 'settings.py', 'analytics.py', 'auth.py', 'descriptions.py', 'validation.py', 'permissions.py', 'task_domain.py', 'web_helpers.py', 'mcp_tokens.py', 'slack_notify.py', 'slack_auth.py', 'automations.py', 'automation_routes.py', 'workspace_routes.py', 'project_routes.py', 'comment_routes.py', 'task_routes.py', 'mcp_server.py')]
     if not all(path.is_file() for path in (*modules, APP_DIR / 'templates' / 'index.html')):
         fail(f'No se encontró la aplicación completa en {APP_DIR}. Copia sus archivos antes de continuar.')
+    print(f'Comprobando acceso a los archivos como {user}.', flush=True)
     for path in (APP_DIR, *modules, APP_DIR / 'config.ini', APP_DIR / 'templates' / 'index.html', *(APP_DIR / 'static' / name for name in ('app.js', 'automations.js', 'navigation.js', 'slack.js', 'project-filters.js', 'attachments.js', 'task-detail.js', 'style.css', 'favicon.svg', 'favicon.png', 'slack-logo.png'))):
         try:
             as_user(user, 'test', '-x' if path.is_dir() else '-r', path)

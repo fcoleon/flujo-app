@@ -25,6 +25,15 @@ class DeploymentConfigTest(unittest.TestCase):
         self.pid_patch.start()
         self.addCleanup(self.pid_patch.stop)
 
+    def test_access_checks_hide_only_repetitive_commands(self):
+        with patch.object(deploy.subprocess, 'run') as run, patch('builtins.print') as output:
+            deploy.as_user('ubuntu', 'test', '-r', '/app/file')
+            deploy.as_user('ubuntu', 'test', '-x', '/app')
+            self.assertEqual(run.call_count, 2)
+            output.assert_not_called()
+            deploy.as_user('ubuntu', 'test', '-w', '/app')
+            output.assert_called_once()
+
     def test_gunicorn_uses_directory_permissions_without_acl(self):
         config = DEPLOY_SCRIPT.parent / 'gunicorn.conf.py'
         with patch('settings.load_settings', return_value={'socket': '/run/custom/app.sock'}):
